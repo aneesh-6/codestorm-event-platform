@@ -1019,7 +1019,7 @@ class Database {
 
       if (json && json.success && Array.isArray(json.registrations) && json.registrations.length > 0) {
         console.log(`📥 Received ${json.registrations.length} registrations from Google Sheets. Synchronizing...`);
-        const syncResult = this.syncAllRegistrations(json.registrations);
+        const syncResult = this.syncAllRegistrations(json.registrations, { reconcile: true });
         return {
           success: true,
           count: json.registrations.length,
@@ -1038,14 +1038,17 @@ class Database {
     }
   }
 
-  syncAllRegistrations(registrations) {
+  syncAllRegistrations(registrations, options = { reconcile: true }) {
     if (!Array.isArray(registrations)) {
-      return { total: 0, synced: 0, created: 0, updated: 0, errors: [] };
+      return { total: 0, synced: 0, created: 0, updated: 0, pruned: 0, errors: [] };
     }
 
     let createdCount = 0;
     let updatedCount = 0;
+    let prunedCount = 0;
     const errors = [];
+    const activeRegIds = new Set();
+    const activePartIds = new Set();
 
     for (const reg of registrations) {
       try {
@@ -1054,6 +1057,15 @@ class Database {
         if (!regId) {
           errors.push({ record: reg, reason: 'Missing Registration ID' });
           continue;
+        }
+
+        activeRegIds.add(regId);
+        const match = regId.match(/^CODESTORM-2026-(\d+)$/i);
+        const seqNum = match ? match[1] : regId.replace(/\D/g, '').slice(-4).padStart(4, '0');
+        const expectedPartId = `CS26-${seqNum}`;
+        activePartIds.add(expectedPartId);
+        if (reg.participantId) {
+          activePartIds.add(String(reg.participantId).trim().toUpperCase());
         }
 
         const rollNumber = String(reg.rollNumber || reg['Roll Number'] || reg['Roll No'] || '').trim().toUpperCase();
@@ -1097,12 +1109,32 @@ class Database {
       }
     }
 
+    // RECONCILIATION: Safely prune participants no longer present in Google Sheets
+    // NEVER prune ADMIN or FACULTY COORDINATOR!
+    if (options.reconcile && activeRegIds.size > 0) {
+      const initialPartLen = this.data.participants.length;
+      this.data.participants = this.data.participants.filter(p => {
+        const pRegId = (p.registrationId || '').toUpperCase();
+        const pPartId = (p.participantId || '').toUpperCase();
+        return activeRegIds.has(pRegId) || activePartIds.has(pPartId);
+      });
+      prunedCount = initialPartLen - this.data.participants.length;
+
+      this.data.users = this.data.users.filter(u => {
+        if (u.role !== 'participant') return true; // KEEP ADMIN & COORDINATOR
+        const uRegId = (u.registrationId || '').toUpperCase();
+        const uPartId = (u.participantId || '').toUpperCase();
+        return activeRegIds.has(uRegId) || activePartIds.has(uPartId);
+      });
+    }
+
     this.save();
     return {
       total: registrations.length,
       synced: createdCount + updatedCount,
       created: createdCount,
       updated: updatedCount,
+      pruned: prunedCount,
       errors
     };
   }
@@ -1123,7 +1155,10 @@ class Database {
       const user = this.findUserByRegistrationId(regId);
 
       const hasAuth = !!user && user.role === 'participant';
-      const authValid = hasAuth && bcrypt.compareSync(regId, user.passwordHash);
+      const match = regId.match(/^CODESTORM-2026-(\d+)$/i);
+      const seqNum = match ? match[1] : regId.replace(/\D/g, '').slice(-4).padStart(4, '0');
+      const expectedPassword = `PASS${seqNum}`;
+      const authValid = hasAuth && (bcrypt.compareSync(expectedPassword, user.passwordHash) || bcrypt.compareSync(regId, user.passwordHash));
       const profileValid = !!p.name && (p.name.trim() !== '') && !!p.rollNumber;
 
       const authStatus = authValid ? 'AUTH OK' : (hasAuth ? 'AUTH PENDING HASH' : 'AUTH MISSING');

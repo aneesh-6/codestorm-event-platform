@@ -9,7 +9,6 @@ import { fileURLToPath } from 'url';
 import db from './database.js';
 import { generateToken, authMiddleware, requireRole } from './auth.js';
 import { evaluateSubmission, runCustomCode } from './executionService.js';
-import { writeCredentialsToGoogleSheet } from '../../codestorm/api/googleSheets.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -223,8 +222,12 @@ app.post('/api/auth/change-password', authMiddleware, (req, res) => {
 app.post(['/api/register', '/api/participant/create-account'], async (req, res) => {
   try {
     const { name, email } = req.body;
+
     if (!name || !email) {
-      return res.status(400).json({ success: false, error: 'Name and email are required.' });
+      return res.status(400).json({
+        success: false,
+        error: 'Name and email are required.'
+      });
     }
 
     const result = db.createParticipantFromRegistration(req.body);
@@ -237,27 +240,6 @@ app.post(['/api/register', '/api/participant/create-account'], async (req, res) 
       });
     }
 
-    // Sync to Google Sheet (Columns A through J on the SAME row)
-    try {
-      await writeCredentialsToGoogleSheet({
-        registrationId: result.registrationId,
-        participantId: result.participantId,
-        temporaryPassword: result.temporaryPassword,
-        name: result.name || req.body.name,
-        rollNumber: result.rollNumber || req.body.rollNumber,
-        email: result.email || req.body.email,
-        mobile: result.mobile || req.body.mobile,
-        year: req.body.year,
-        branch: req.body.branch,
-        section: req.body.section,
-        yearAndBranch: (req.body.year && req.body.branch) ? `${req.body.year} - ${req.body.branch}` : (req.body.yearAndBranch || 'CSE'),
-        paymentScreenshot: 'Paid',
-        screenshotBase64: req.body.screenshotBase64 || req.body.paymentScreenshot || '',
-      });
-    } catch (sheetErr) {
-      console.warn('[Platform Google Sheets Sync Note]', sheetErr.message);
-    }
-
     res.status(201).json({
       success: true,
       message: 'Participant account created successfully!',
@@ -268,9 +250,13 @@ app.post(['/api/register', '/api/participant/create-account'], async (req, res) 
       email: result.email,
       rollNumber: result.rollNumber,
     });
+
   } catch (err) {
     console.error('[Registration Error]', err.message);
-    res.status(500).json({ success: false, error: 'Failed to create participant account.' });
+    res.status(500).json({
+      success: false,
+      error: 'Failed to create participant account.'
+    });
   }
 });
 

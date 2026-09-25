@@ -123,8 +123,6 @@ async function run() {
     const rawYB = String(reg.yearAndBranch || '').trim();
     const { year, branch, section } = parseYearAndBranch(rawYB);
 
-    // Derived participantId
-    const participantId = deriveParticipantId(regId);
 
     // Strictly find existing user by permanent relationship key: registrationId
     let existingUser = dbData.users.find(u => 
@@ -142,14 +140,14 @@ async function run() {
 
     const action = existingUser ? 'UPDATE' : 'CREATE';
 
-    // Temporary password assignment:
-    // If existing valid temporaryPassword in Sheet (e.g. CS26-0033 with nvWX9h4V), preserve it.
-    // Otherwise generate fresh 8-char secure password.
-    let tempPassword = String(reg.temporaryPassword || '').trim();
-    if (!tempPassword) {
-      const match = regId.match(/^CODESTORM-2026-(\d+)$/i);
-      tempPassword = match ? `PASS${match[1]}` : `PASS${regId.replace(/\D/g, '').slice(-4).padStart(4, '0')}`;
-    }
+    // All existing participants must be upgraded to deterministic credentials:
+    // Registration ID: CODESTORM-2026-XXXX
+    // Participant ID: CS26-XXXX
+    // Password: PASSXXXX (e.g. CODESTORM-2026-0027 -> PASS0027)
+    const match = regId.match(/^CODESTORM-2026-(\d+)$/i);
+    const seqNum = match ? match[1] : regId.replace(/\D/g, '').slice(-4).padStart(4, '0');
+    const participantId = `CS26-${seqNum}`;
+    const tempPassword = `PASS${seqNum}`;
 
     migrationPlan.push({
       registrationId: regId,

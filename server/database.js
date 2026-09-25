@@ -854,17 +854,23 @@ class Database {
     let changed = false;
     const salt = bcrypt.genSaltSync(10);
 
-
-
-    // Normalize all participants to use Registration ID as login credential
+    // Normalize all participants to use Participant ID (CS26-XXXX) and deterministic Password (PASSXXXX)
     for (const u of this.data.users) {
       if (u.role === 'participant') {
         if (u.registrationId) {
           u.registrationId = u.registrationId.trim().toUpperCase();
-          u.participantId = u.registrationId;
-          u.passwordHash = bcrypt.hashSync(u.registrationId, salt);
-          u.mustChangePassword = false;
-          changed = true;
+          const match = u.registrationId.match(/^CODESTORM-2026-(\d+)$/i);
+          const seqNum = match ? match[1] : u.registrationId.replace(/\D/g, '').slice(-4).padStart(4, '0');
+          const expectedPartId = `CS26-${seqNum}`;
+          const expectedPassword = `PASS${seqNum}`;
+
+          const isHashValid = u.passwordHash && bcrypt.compareSync(expectedPassword, u.passwordHash);
+          if (u.participantId !== expectedPartId || !isHashValid) {
+            u.participantId = expectedPartId;
+            u.passwordHash = bcrypt.hashSync(expectedPassword, salt);
+            u.mustChangePassword = false;
+            changed = true;
+          }
         }
       }
     }
@@ -872,8 +878,13 @@ class Database {
     for (const p of this.data.participants) {
       if (p.registrationId) {
         p.registrationId = p.registrationId.trim().toUpperCase();
-        p.participantId = p.registrationId;
-        changed = true;
+        const match = p.registrationId.match(/^CODESTORM-2026-(\d+)$/i);
+        const seqNum = match ? match[1] : p.registrationId.replace(/\D/g, '').slice(-4).padStart(4, '0');
+        const expectedPartId = `CS26-${seqNum}`;
+        if (p.participantId !== expectedPartId) {
+          p.participantId = expectedPartId;
+          changed = true;
+        }
       }
     }
 

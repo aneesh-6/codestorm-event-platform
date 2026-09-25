@@ -1,0 +1,14 @@
+{
+  "name": "codestorm-2026-platform",
+  "version": "1.0.0",
+  "description": "CodeStorm 2026 Official Live Competition and Event Conducting Platform",
+  "private": true,
+  "scripts": {
+    "start": "node server/server.js",
+    "dev:server": "node server/server.js",
+    "build:client": "cd client && npm run build",
+    "build": "cd client && npm run build"
+  },
+  "keywords": ["codestorm", "competitive-programming", "hackathon-platform"],
+  "author": "CodeStorm 2026 Organizing Committee - MREM CSE-DS"
+}

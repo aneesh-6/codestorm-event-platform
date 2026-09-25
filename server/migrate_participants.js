@@ -146,8 +146,9 @@ async function run() {
     // If existing valid temporaryPassword in Sheet (e.g. CS26-0033 with nvWX9h4V), preserve it.
     // Otherwise generate fresh 8-char secure password.
     let tempPassword = String(reg.temporaryPassword || '').trim();
-    if (!tempPassword || tempPassword.length < 6) {
-      tempPassword = generateSecureTemporaryPassword(8);
+    if (!tempPassword) {
+      const match = regId.match(/^CODESTORM-2026-(\d+)$/i);
+      tempPassword = match ? `PASS${match[1]}` : `PASS${regId.replace(/\D/g, '').slice(-4).padStart(4, '0')}`;
     }
 
     migrationPlan.push({

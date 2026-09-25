@@ -63,6 +63,24 @@ export function generateParticipantId(regId) {
   return `CS26-${clean.replace(/[^a-zA-Z0-9]/g, '').slice(-4)}`;
 }
 
+/**
+ * Derives deterministic password from Registration sequence:
+ * CODESTORM-2026-XXXX -> PASSXXXX (e.g., CODESTORM-2026-9216 -> PASS9216)
+ */
+export function generateDeterministicPassword(regId) {
+  if (!regId) return 'PASS0001';
+  const clean = String(regId).trim().toUpperCase();
+  const match = clean.match(/^CODESTORM-2026-(\d+)$/i);
+  if (match) {
+    return `PASS${match[1]}`;
+  }
+  const digits = clean.replace(/\D/g, '');
+  if (digits.length >= 4) {
+    return `PASS${digits.slice(-4)}`;
+  }
+  return `PASS${digits.padStart(4, '0')}`;
+}
+
 // Default initial state
 function getInitialData() {
   const salt = bcrypt.genSaltSync(10);
@@ -1202,8 +1220,12 @@ class Database {
       participantId = generateParticipantId(cleanRegId);
     }
 
-    // Generate secure 8-character random temporary password if not passed
-    const temporaryPassword = String(regData.temporaryPassword || regData.password || generateSecureTemporaryPassword(8)).trim();
+    // Generate deterministic password: PASS + 4-digit registration number (e.g. PASS9216)
+    const temporaryPassword = String(
+      regData.temporaryPassword ||
+      regData.password ||
+      generateDeterministicPassword(cleanRegId || participantId)
+    ).trim();
 
     // 1. Prevent duplicate account creation if submitted twice or retried
     let existingUser = null;

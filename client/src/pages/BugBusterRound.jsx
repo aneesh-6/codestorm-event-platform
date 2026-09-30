@@ -54,6 +54,7 @@ export default function BugBusterRound({ onBackToDashboard }) {
   }, []);
 
   const loadQuestionCode = (q, lang) => {
+    const targetLang = lang || q.language || (q.buggyCode?.java ? 'java' : 'python');
     authFetch(`/api/progress/1/${q.id}`)
       .then(r => r.json())
       .then(saved => {
@@ -62,13 +63,15 @@ export default function BugBusterRound({ onBackToDashboard }) {
           if (saved.selectedLanguage) setSelectedLang(saved.selectedLanguage);
           setSaveStatus('Draft restored');
         } else {
-          const code = q.buggyCode?.[lang] || q.buggyCode?.python || '// No template';
+          const code = q.buggyCode?.[targetLang] || q.buggyCode?.python || q.buggyCode?.java || '// No template';
+          setSelectedLang(targetLang);
           setEditorCode(code);
           setSaveStatus('Template loaded');
         }
       })
       .catch(() => {
-        const code = q.buggyCode?.[lang] || q.buggyCode?.python || '// No template';
+        const code = q.buggyCode?.[targetLang] || q.buggyCode?.python || q.buggyCode?.java || '// No template';
+        setSelectedLang(targetLang);
         setEditorCode(code);
       });
 
@@ -85,7 +88,9 @@ export default function BugBusterRound({ onBackToDashboard }) {
   const handleSelectQuestion = (idx) => {
     setActiveQIndex(idx);
     const q = questions[idx];
-    loadQuestionCode(q, selectedLang);
+    const targetLang = q.language || (q.buggyCode?.java ? 'java' : 'python');
+    setSelectedLang(targetLang);
+    loadQuestionCode(q, targetLang);
     setRunResult(null);
     setSubmissionResult(null);
   };
@@ -207,15 +212,29 @@ export default function BugBusterRound({ onBackToDashboard }) {
         </div>
 
         {/* Question Selector Tabs */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+        <div style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: '6px',
+          overflowX: 'auto',
+          maxWidth: '55vw',
+          padding: '4px 2px'
+        }}>
           {questions.map((q, idx) => (
             <button
               key={q.id}
               onClick={() => handleSelectQuestion(idx)}
               className={`btn btn-sm ${activeQIndex === idx ? 'btn-primary' : 'btn-outline'}`}
-              style={{ minHeight: '34px', padding: '6px 14px' }}
+              style={{
+                minHeight: '32px',
+                padding: '4px 10px',
+                fontSize: '0.8125rem',
+                whiteSpace: 'nowrap',
+                fontWeight: activeQIndex === idx ? 800 : 600
+              }}
+              title={q.title}
             >
-              Question {idx + 1}
+              Q{idx + 1}
             </button>
           ))}
         </div>

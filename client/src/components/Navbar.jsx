@@ -147,6 +147,13 @@ export default function Navbar({ currentView, setCurrentView }) {
               >
                 <Award size={14} /> Certificate
               </button>
+              <button 
+                onClick={() => setCurrentView('live')}
+                className={`btn btn-sm ${currentView === 'live' ? 'btn-primary' : 'btn-outline'}`}
+                title="Auditorium Live Stage Screen"
+              >
+                <Tv size={14} /> Live Stage
+              </button>
             </>
           )}
 

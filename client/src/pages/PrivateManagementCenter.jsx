@@ -48,7 +48,9 @@ export default function PrivateManagementCenter({ onNavigateToLive, onNavigateTo
   const [questions, setQuestions] = useState([]);
   const [antiCheatLogs, setAntiCheatLogs] = useState([]);
   const [selectedRoundForControl, setSelectedRoundForControl] = useState(1);
-  const [durationInput, setDurationInput] = useState(30);
+  // Per-round duration: keyed by roundId. Initialised from DB values when rounds load.
+  const [roundDurations, setRoundDurations] = useState({ 1: 30, 2: 30, 3: 30 });
+  const [durationSaving, setDurationSaving] = useState({});
   const [confirmDialog, setConfirmDialog] = useState(null);
   const [tempPasswordModal, setTempPasswordModal] = useState(null); // { participantId, name, tempPassword }
 
@@ -112,6 +114,17 @@ export default function PrivateManagementCenter({ onNavigateToLive, onNavigateTo
     return () => clearInterval(interval);
   }, []);
 
+  // Sync per-round duration inputs from DB values whenever rounds data loads
+  useEffect(() => {
+    if (eventData?.rounds) {
+      setRoundDurations(prev => {
+        const synced = {};
+        eventData.rounds.forEach(r => { synced[r.id] = r.durationMinutes || 30; });
+        return synced;
+      });
+    }
+  }, [eventData]);
+
   const formatTimer = (sec) => {
     if (sec === undefined || sec === null || sec < 0) return '00:00';
     const mins = Math.floor(sec / 60);
@@ -121,13 +134,34 @@ export default function PrivateManagementCenter({ onNavigateToLive, onNavigateTo
 
   // --- ROUND CONTROLS ---
   const handleStartRound = (roundId) => {
+    // Duration is always read from DB — no client-side value passed
     authFetch('/api/event/round/start', {
       method: 'POST',
-      body: JSON.stringify({ roundId, durationMinutes: Number(durationInput) })
+      body: JSON.stringify({ roundId })
     })
       .then(r => r.json())
       .then(() => loadAll())
       .catch(err => alert(err.message));
+  };
+
+  const handleSaveDuration = (roundId) => {
+    const val = Number(roundDurations[roundId]);
+    if (!val || val < 1 || val > 300) {
+      alert('Duration must be a positive number between 1 and 300 minutes.');
+      return;
+    }
+    setDurationSaving(prev => ({ ...prev, [roundId]: true }));
+    authFetch(`/api/rounds/${roundId}/duration`, {
+      method: 'PATCH',
+      body: JSON.stringify({ durationMinutes: val })
+    })
+      .then(r => r.json())
+      .then(d => {
+        if (d.error) { alert(d.error); return; }
+        loadAll();
+      })
+      .catch(err => alert('Failed to save duration: ' + err.message))
+      .finally(() => setDurationSaving(prev => ({ ...prev, [roundId]: false })));
   };
 
   const handlePauseRound = () => {
@@ -154,6 +188,28 @@ export default function PrivateManagementCenter({ onNavigateToLive, onNavigateTo
           setConfirmDialog(null);
           loadAll();
         });
+      }
+    });
+  };
+
+  const handleRestartRound = (roundId, roundName) => {
+    setConfirmDialog({
+      title: `🔄 Restart ${roundName || `Round ${roundId}`}?`,
+      message: `This will RESET Round ${roundId} back to "upcoming" status and permanently DELETE all submissions and saved progress for this round. Participant scores for this round will be cleared. This action cannot be undone. Are you sure you want to restart this round?`,
+      onConfirm: () => {
+        authFetch('/api/event/round/restart', {
+          method: 'POST',
+          body: JSON.stringify({ roundId })
+        })
+          .then(r => r.json())
+          .then(d => {
+            setConfirmDialog(null);
+            loadAll();
+            if (d.removedSubmissions > 0) {
+              alert(`✅ Round restarted. ${d.removedSubmissions} submission(s) cleared.`);
+            }
+          })
+          .catch(err => alert('Restart failed: ' + err.message));
       }
     });
   };
@@ -585,12 +641,47 @@ export default function PrivateManagementCenter({ onNavigateToLive, onNavigateTo
                       {round.description}
                     </p>
 
-                    <div style={{ fontSize: '0.82rem', color: 'var(--text-secondary)', display: 'flex', justifyContent: 'space-between', marginBottom: '1.25rem' }}>
-                      <span>Scheduled Duration: <strong>{round.durationMinutes}m</strong></span>
-                      {isLive && (
-                        <span style={{ color: 'var(--color-orange)', fontWeight: 700 }}>
-                          Remaining: {formatTimer(timerState.remainingSeconds)}
-                        </span>
+                    {/* Per-round Duration Control */}
+                    <div style={{ marginBottom: '1.25rem' }}>
+                      <div style={{ fontSize: '0.78rem', fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: '0.5rem' }}>Duration</div>
+                      {isLive ? (
+                        // Live: show read-only info
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap' }}>
+                          <span style={{ fontSize: '0.9rem', fontWeight: 700, color: 'var(--color-orange)' }}>
+                            {round.durationMinutes} min — Remaining: {formatTimer(timerState.roundId === round.id ? timerState.remainingSeconds : round.remainingSeconds)}
+                          </span>
+                          <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>(Cannot change while live)</span>
+                        </div>
+                      ) : (
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                          <input
+                            type="number"
+                            min="1"
+                            max="300"
+                            value={roundDurations[round.id] ?? round.durationMinutes ?? 30}
+                            onChange={e => setRoundDurations(prev => ({ ...prev, [round.id]: e.target.value }))}
+                            className="input-field"
+                            style={{ width: '80px', padding: '0.35rem 0.6rem', fontSize: '0.9rem', fontWeight: 700, textAlign: 'center' }}
+                          />
+                          <span style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>minutes</span>
+                          <button
+                            onClick={() => handleSaveDuration(round.id)}
+                            disabled={durationSaving[round.id]}
+                            style={{
+                              padding: '0.3rem 0.75rem',
+                              background: durationSaving[round.id] ? '#e2e8f0' : '#1a2d5a',
+                              color: durationSaving[round.id] ? 'var(--text-muted)' : '#fff',
+                              border: 'none',
+                              borderRadius: '6px',
+                              fontWeight: 700,
+                              fontSize: '0.78rem',
+                              cursor: durationSaving[round.id] ? 'not-allowed' : 'pointer',
+                              transition: 'all 0.15s'
+                            }}
+                          >
+                            {durationSaving[round.id] ? 'Saving…' : '💾 Save'}
+                          </button>
+                        </div>
                       )}
                     </div>
 
@@ -628,9 +719,32 @@ export default function PrivateManagementCenter({ onNavigateToLive, onNavigateTo
                       )}
 
                       {isCompleted && (
-                        <span style={{ fontSize: '0.85rem', color: '#059669', fontWeight: 700, display: 'flex', alignItems: 'center', gap: '0.35rem' }}>
-                          <CheckCircle2 size={16} /> Round Completed
-                        </span>
+                        <>
+                          <span style={{ fontSize: '0.82rem', color: '#059669', fontWeight: 700, display: 'flex', alignItems: 'center', gap: '0.35rem', flex: 1 }}>
+                            <CheckCircle2 size={15} /> Completed
+                          </span>
+                          <button
+                            onClick={() => handleRestartRound(round.id, round.name)}
+                            style={{
+                              display: 'flex',
+                              alignItems: 'center',
+                              gap: '0.35rem',
+                              padding: '0.35rem 0.9rem',
+                              background: 'rgba(245,158,11,0.12)',
+                              color: '#b45309',
+                              border: '1.5px solid rgba(245,158,11,0.45)',
+                              borderRadius: '8px',
+                              fontWeight: 700,
+                              fontSize: '0.8rem',
+                              cursor: 'pointer',
+                              transition: 'all 0.18s'
+                            }}
+                            onMouseEnter={e => { e.currentTarget.style.background = 'rgba(245,158,11,0.25)'; e.currentTarget.style.color = '#92400e'; }}
+                            onMouseLeave={e => { e.currentTarget.style.background = 'rgba(245,158,11,0.12)'; e.currentTarget.style.color = '#b45309'; }}
+                          >
+                            <RotateCcw size={13} /> RESTART ROUND
+                          </button>
+                        </>
                       )}
                     </div>
                   </div>
@@ -639,23 +753,7 @@ export default function PrivateManagementCenter({ onNavigateToLive, onNavigateTo
             </div>
 
             {/* Advance to next round bar */}
-            <div style={{ marginTop: '2rem', paddingTop: '1.5rem', borderTop: '1px solid var(--border-color)', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '1rem' }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
-                <span style={{ fontSize: '0.88rem', fontWeight: 700, color: 'var(--color-navy)' }}>
-                  Set Duration for Round Starts:
-                </span>
-                <input
-                  type="number"
-                  min="5"
-                  max="180"
-                  value={durationInput}
-                  onChange={(e) => setDurationInput(e.target.value)}
-                  className="input-field"
-                  style={{ width: '90px', padding: '0.4rem 0.75rem' }}
-                />
-                <span style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>minutes</span>
-              </div>
-
+            <div style={{ marginTop: '2rem', paddingTop: '1.5rem', borderTop: '1px solid var(--border-color)', display: 'flex', justifyContent: 'flex-end' }}>
               <button
                 onClick={handleNextRound}
                 className="btn btn-secondary"

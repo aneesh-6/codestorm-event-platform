@@ -111,8 +111,8 @@ setInterval(() => {
 // 1. AUTHENTICATION ROUTES
 // -------------------------------------------------------------
 app.post('/api/auth/login', async (req, res) => {
-  const { identifier, password } = req.body;
-  const enteredLoginId = (identifier || '').trim();
+  const { identifier, password, loginId, participantId } = req.body;
+  const enteredLoginId = (identifier || loginId || participantId || '').trim();
   const enteredPassword = (password || '').trim();
 
   if (!enteredLoginId || !enteredPassword) {
@@ -287,10 +287,65 @@ app.get('/api/auth/me', authMiddleware, (req, res) => {
 // -------------------------------------------------------------
 app.get('/api/event/status', (req, res) => {
   const settings = db.getEventSettings();
-  const rounds = db.getRounds();
-  const currentRound = settings.currentRoundId ? db.getRoundById(settings.currentRoundId) : null;
+  const rawRounds = db.getRounds();
+  // Enrich each round with actual live question count from DB
+  const rounds = rawRounds.map(r => ({
+    ...r,
+    totalQuestions: db.getQuestionsByRound(r.id).length
+  }));
+  const currentRound = settings.currentRoundId ? rounds.find(r => r.id === settings.currentRoundId) || null : null;
   const participants = db.getParticipants();
   const checkedInCount = participants.filter(p => p.checkedIn).length;
+
+  // Real submission metrics for active round
+  const allSubmissions = db.getSubmissions();
+  const targetRoundId = currentRound ? currentRound.id : (settings.currentRoundId || 1);
+  const currentRoundSubs = allSubmissions.filter(s => s.roundId === targetRoundId);
+  const submittedParticipantIds = new Set(currentRoundSubs.map(s => s.participantId));
+  const submittedCount = submittedParticipantIds.size;
+  const remainingCount = Math.max(0, checkedInCount - submittedCount);
+
+  // Clean, real activity status items derived solely from database state
+  const recentActivity = [];
+  if (currentRound) {
+    if (currentRound.status === 'live') {
+      recentActivity.push({
+        id: 'act-round-live',
+        type: 'round',
+        icon: 'live',
+        text: `Round ${currentRound.id} (${currentRound.name}) is officially LIVE`,
+        time: currentRound.startTime || new Date().toISOString()
+      });
+    } else if (currentRound.status === 'completed') {
+      recentActivity.push({
+        id: 'act-round-completed',
+        type: 'round',
+        icon: 'check',
+        text: `Round ${currentRound.id} (${currentRound.name}) has concluded`,
+        time: currentRound.endTime || new Date().toISOString()
+      });
+    }
+  }
+
+  if (checkedInCount > 0) {
+    recentActivity.push({
+      id: 'act-checked-in',
+      type: 'participants',
+      icon: 'users',
+      text: `${checkedInCount} Competitors Checked In and Ready`,
+      time: new Date().toISOString()
+    });
+  }
+
+  if (currentRoundSubs.length > 0) {
+    recentActivity.push({
+      id: 'act-submissions',
+      type: 'submissions',
+      icon: 'code',
+      text: `${currentRoundSubs.length} Submissions Logged (${submittedCount} Active Participants)`,
+      time: currentRoundSubs[0]?.submittedAt || new Date().toISOString()
+    });
+  }
 
   res.json({
     settings,
@@ -299,23 +354,53 @@ app.get('/api/event/status', (req, res) => {
     stats: {
       totalParticipants: participants.length,
       checkedInParticipants: checkedInCount,
-      activeParticipants: Math.max(onlineParticipants.size, checkedInCount > 0 ? 1 : 0)
+      activeParticipants: Math.max(onlineParticipants.size, checkedInCount > 0 ? 1 : 0),
+      submittedParticipants: submittedCount,
+      remainingParticipants: remainingCount,
+      totalSubmissions: currentRoundSubs.length,
+      recentActivity
     }
   });
 });
 
-// Start Round
-app.post('/api/event/round/start', authMiddleware, requireRole('admin'), (req, res) => {
-  const { roundId, durationMinutes } = req.body;
+// Save Round Duration (Admin / Coordinator)
+app.patch('/api/rounds/:roundId/duration', authMiddleware, requireRole('admin', 'coordinator'), (req, res) => {
+  const roundId = Number(req.params.roundId);
+  const { durationMinutes } = req.body;
+
+  if (!durationMinutes || isNaN(durationMinutes) || durationMinutes < 1 || durationMinutes > 300) {
+    return res.status(400).json({ error: 'Duration must be a positive number between 1 and 300 minutes.' });
+  }
+
   const round = db.getRoundById(roundId);
   if (!round) return res.status(404).json({ error: 'Round not found' });
 
-  const duration = durationMinutes || round.durationMinutes || 30;
+  // Only allow duration change when round is NOT currently live
+  if (round.status === 'live') {
+    return res.status(400).json({ error: 'Cannot change duration while the round is live.' });
+  }
+
+  const updated = db.updateRound(roundId, {
+    durationMinutes: Math.round(Number(durationMinutes)),
+    remainingSeconds: Math.round(Number(durationMinutes)) * 60
+  });
+
+  io.emit('round_duration_updated', { roundId, durationMinutes: updated.durationMinutes });
+  res.json({ success: true, round: updated });
+});
+
+// Start Round
+app.post('/api/event/round/start', authMiddleware, requireRole('admin'), (req, res) => {
+  const { roundId } = req.body;
+  const round = db.getRoundById(roundId);
+  if (!round) return res.status(404).json({ error: 'Round not found' });
+
+  // Always use the saved duration from DB — never rely on client-supplied duration
+  const duration = round.durationMinutes || 30;
   const startTime = new Date().toISOString();
   const endTime = new Date(Date.now() + duration * 60 * 1000).toISOString();
 
   round.status = 'live';
-  round.durationMinutes = duration;
   round.startTime = startTime;
   round.endTime = endTime;
   round.remainingSeconds = duration * 60;
@@ -400,6 +485,68 @@ app.post('/api/event/round/end', authMiddleware, requireRole('admin'), (req, res
   res.json({ success: true, round });
 });
 
+// Restart Round (Admin only — resets a completed round for re-use)
+app.post('/api/event/round/restart', authMiddleware, requireRole('admin'), (req, res) => {
+  const { roundId } = req.body;
+  if (!roundId) return res.status(400).json({ error: 'roundId is required' });
+
+  const round = db.getRoundById(Number(roundId));
+  if (!round) return res.status(404).json({ error: 'Round not found' });
+
+  // Reset round state
+  round.status = 'upcoming';
+  round.startTime = null;
+  round.endTime = null;
+  round.remainingSeconds = (round.durationMinutes || 30) * 60;
+  round.isPaused = false;
+  db.updateRound(round.id, round);
+
+  // Clear all submissions for this round
+  const beforeCount = db.data.submissions.length;
+  db.data.submissions = db.data.submissions.filter(s => s.roundId !== Number(roundId));
+  const removedCount = beforeCount - db.data.submissions.length;
+
+  // Clear all saved progress for this round
+  Object.keys(db.data.progress).forEach(key => {
+    if (key.includes(`_${roundId}_`)) {
+      delete db.data.progress[key];
+    }
+  });
+
+  // Recalculate stats for all participants affected
+  const affectedParticipants = new Set();
+  // Since we already cleared the subs, just recalc everyone to be safe
+  db.data.participants.forEach(p => {
+    db.recalculateParticipantStats(p.participantId || p.id);
+  });
+
+  db.save();
+
+  // Update event status if this was the current round
+  const settings = db.getEventSettings();
+  if (settings.currentRoundId === Number(roundId)) {
+    db.updateEventSettings({
+      eventStatus: `round${roundId}_upcoming`,
+      currentRoundId: Number(roundId)
+    });
+  }
+
+  const announcement = db.createAnnouncement(
+    `🔄 ${round.name} has been reset by the organizer. Stand by for the round to restart.`,
+    'urgent',
+    'Admin Control Center'
+  );
+
+  io.emit('round_restarted', {
+    roundId: round.id,
+    round,
+    removedSubmissions: removedCount,
+    announcement
+  });
+
+  res.json({ success: true, round, removedSubmissions: removedCount });
+});
+
 // Next Round Transition
 app.post('/api/event/round/next', authMiddleware, requireRole('admin'), (req, res) => {
   const settings = db.getEventSettings();
@@ -451,6 +598,7 @@ app.get('/api/questions/round/:roundId', authMiddleware, (req, res) => {
     if (!isPrivileged && !settings.resultsPublished) {
       const copy = { ...q };
       delete copy.correctAnswer;
+      delete copy.acceptedAnswers;
       delete copy.explanation;
       // Also hide hidden test cases from participants
       if (copy.testCases) {
@@ -531,12 +679,38 @@ app.post('/api/submit', authMiddleware, async (req, res) => {
 
   let evalResult = null;
 
-  if (question.type === 'mcq') {
-    // Round 2 Trace & Race MCQ Evaluation
-    const isCorrect = String(codeOrAnswer).trim().toUpperCase() === String(question.correctAnswer).trim().toUpperCase();
+  if (question.type === 'mcq' || question.type === 'output') {
+    // Round 2 Trace & Race Output Prediction / MCQ Evaluation
+    let isCorrect = false;
+
+    if (question.type === 'mcq') {
+      isCorrect = String(codeOrAnswer || '').trim().toUpperCase() === String(question.correctAnswer || '').trim().toUpperCase();
+    } else {
+      // Robust multi-line output comparison handling Windows/Unix newlines & trailing spaces
+      const normalize = (s) => String(s || '')
+        .replace(/\r\n/g, '\n')
+        .replace(/\r/g, '\n')
+        .split('\n')
+        .map(l => l.trimEnd())
+        .join('\n')
+        .trim();
+
+      const submittedNorm = normalize(codeOrAnswer);
+      const expectedNorm = normalize(question.correctAnswer);
+      isCorrect = (submittedNorm === expectedNorm);
+
+      if (!isCorrect && Array.isArray(question.acceptedAnswers)) {
+        isCorrect = question.acceptedAnswers.some(ans => normalize(ans) === submittedNorm);
+      }
+    }
+
     const points = question.points || 10;
-    const negative = question.negativePoints || 0;
-    const score = isCorrect ? points : (codeOrAnswer ? -negative : 0);
+    // CODESTORM 2026: Strict NO Negative Marking Policy
+    // Correct answer -> award configured positive points
+    // Wrong answer -> 0 marks
+    // Unanswered / Empty -> 0 marks
+    // NEVER subtract marks
+    const score = isCorrect ? points : 0;
 
     evalResult = {
       status: isCorrect ? 'Accepted' : 'Wrong Answer',
@@ -805,6 +979,23 @@ app.post('/api/checkin/:participantId', authMiddleware, requireRole('admin', 'co
   res.json({ success: true, participant });
 });
 
+app.post('/api/checkin/:participantId/reset', authMiddleware, requireRole('admin', 'coordinator'), (req, res) => {
+  const participant = db.findParticipantById(req.params.participantId);
+  if (!participant) return res.status(404).json({ error: 'Participant not found' });
+
+  participant.checkedIn = false;
+  participant.checkedInAt = null;
+  db.updateParticipant(participant.id, participant);
+
+  io.emit('checkin_update', {
+    participantId: participant.participantId,
+    name: participant.name,
+    checkedIn: false
+  });
+
+  res.json({ success: true, message: `Check-in status reset for ${participant.participantId}`, participant });
+});
+
 // -------------------------------------------------------------
 // 8. PARTICIPANTS MANAGEMENT
 // -------------------------------------------------------------
@@ -817,6 +1008,43 @@ app.patch('/api/participants/:id/status', authMiddleware, requireRole('admin', '
   const p = db.updateParticipant(req.params.id, { status });
   if (!p) return res.status(404).json({ error: 'Participant not found' });
   res.json(p);
+});
+
+app.patch('/api/participants/:id', authMiddleware, requireRole('admin', 'coordinator'), (req, res) => {
+  const p = db.findParticipantById(req.params.id);
+  if (!p) return res.status(404).json({ error: 'Participant not found' });
+
+  const allowed = ['name', 'rollNumber', 'email', 'mobile', 'year', 'branch', 'section', 'college', 'checkedIn', 'status', 'participantId'];
+  const updates = {};
+  for (const key of allowed) {
+    if (req.body[key] !== undefined) {
+      updates[key] = req.body[key];
+    }
+  }
+  if (updates.checkedIn === false) {
+    updates.checkedInAt = null;
+  } else if (updates.checkedIn === true && !p.checkedInAt) {
+    updates.checkedInAt = new Date().toISOString();
+  }
+
+  const updated = db.updateParticipant(p.id, updates);
+  if (updates.checkedIn !== undefined) {
+    io.emit('checkin_update', {
+      participantId: updated.participantId,
+      name: updated.name,
+      checkedIn: updated.checkedIn
+    });
+  }
+  res.json({ success: true, participant: updated });
+});
+
+app.delete('/api/participants/:id', authMiddleware, requireRole('admin'), (req, res) => {
+  const p = db.findParticipantById(req.params.id);
+  if (!p) return res.status(404).json({ error: 'Participant not found' });
+
+  const deleted = db.deleteParticipant(p.participantId || p.id);
+  io.emit('participant_deleted', { participantId: p.participantId, id: p.id });
+  res.json({ success: true, message: `Participant ${p.participantId} deleted`, deleted });
 });
 
 app.post('/api/participants/:id/reset-password', authMiddleware, requireRole('admin', 'coordinator'), (req, res) => {
@@ -1045,4 +1273,17 @@ server.listen(PORT, () => {
       console.log(`ℹ️ Google Sheets Auto-Sync Note: ${res.message || res.error || 'Awaiting script deployment update'}`);
     }
   }).catch(err => console.warn('Startup sync note:', err.message));
+
+  // Recurring Background Auto-Sync every 30 seconds for live Google Sheets registrations
+  setInterval(async () => {
+    try {
+      const res = await db.syncFromGoogleSheets();
+      if (res && res.success && res.created > 0) {
+        console.log(`📥 Background Auto-Sync: Added ${res.created} new participants from Google Sheets.`);
+        io.emit('participants_updated', { count: res.total, created: res.created });
+      }
+    } catch (err) {
+      // quiet catch for network glitches
+    }
+  }, 30000);
 });

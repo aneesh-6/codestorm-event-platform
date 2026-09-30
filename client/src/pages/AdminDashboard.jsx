@@ -41,7 +41,9 @@ export default function AdminDashboard({ onNavigateToLive, onNavigateToWinners }
   const [questions, setQuestions] = useState([]);
   const [antiCheatLogs, setAntiCheatLogs] = useState([]);
   const [selectedRoundForControl, setSelectedRoundForControl] = useState(1);
-  const [durationInput, setDurationInput] = useState(30);
+  // Per-round duration keyed by roundId — synced from DB
+  const [roundDurations, setRoundDurations] = useState({ 1: 30, 2: 30, 3: 30 });
+  const [durationSaving, setDurationSaving] = useState({});
   const [confirmDialog, setConfirmDialog] = useState(null); // { title, message, onConfirm }
   const [announcementMsg, setAnnouncementMsg] = useState('');
   const [announcementPriority, setAnnouncementPriority] = useState('normal');
@@ -92,6 +94,17 @@ export default function AdminDashboard({ onNavigateToLive, onNavigateToWinners }
     return () => clearInterval(interval);
   }, []);
 
+  // Sync per-round duration inputs from DB values whenever eventData refreshes
+  useEffect(() => {
+    if (eventData?.rounds) {
+      setRoundDurations(() => {
+        const synced = {};
+        eventData.rounds.forEach(r => { synced[r.id] = r.durationMinutes || 30; });
+        return synced;
+      });
+    }
+  }, [eventData]);
+
   // Format seconds MM:SS
   const formatTimer = (sec) => {
     const mins = Math.floor(sec / 60);
@@ -101,13 +114,31 @@ export default function AdminDashboard({ onNavigateToLive, onNavigateToWinners }
 
   // --- ROUND CONTROLS ---
   const handleStartRound = (roundId) => {
+    // Duration always read from DB saved value
     authFetch('/api/event/round/start', {
       method: 'POST',
-      body: JSON.stringify({ roundId, durationMinutes: Number(durationInput) })
+      body: JSON.stringify({ roundId })
     })
       .then(r => r.json())
       .then(() => loadAll())
       .catch(err => alert(err.message));
+  };
+
+  const handleSaveDuration = (roundId) => {
+    const val = Number(roundDurations[roundId]);
+    if (!val || val < 1 || val > 300) {
+      alert('Duration must be a positive number between 1 and 300 minutes.');
+      return;
+    }
+    setDurationSaving(prev => ({ ...prev, [roundId]: true }));
+    authFetch(`/api/rounds/${roundId}/duration`, {
+      method: 'PATCH',
+      body: JSON.stringify({ durationMinutes: val })
+    })
+      .then(r => r.json())
+      .then(d => { if (d.error) alert(d.error); else loadAll(); })
+      .catch(err => alert('Failed to save: ' + err.message))
+      .finally(() => setDurationSaving(prev => ({ ...prev, [roundId]: false })));
   };
 
   const handlePauseRound = () => {
@@ -134,6 +165,28 @@ export default function AdminDashboard({ onNavigateToLive, onNavigateToWinners }
           setConfirmDialog(null);
           loadAll();
         });
+      }
+    });
+  };
+
+  const handleRestartRound = (roundId, roundName) => {
+    setConfirmDialog({
+      title: `🔄 Restart ${roundName || `Round ${roundId}`}?`,
+      message: `This will RESET Round ${roundId} back to "upcoming" status and permanently DELETE all submissions and saved progress for this round. Participant scores for this round will be cleared. This action cannot be undone. Are you sure?`,
+      onConfirm: () => {
+        authFetch('/api/event/round/restart', {
+          method: 'POST',
+          body: JSON.stringify({ roundId })
+        })
+          .then(r => r.json())
+          .then(d => {
+            setConfirmDialog(null);
+            loadAll();
+            if (d.removedSubmissions > 0) {
+              alert(`✅ Round restarted. ${d.removedSubmissions} submission(s) cleared.`);
+            }
+          })
+          .catch(err => alert('Restart failed: ' + err.message));
       }
     });
   };
@@ -379,6 +432,16 @@ export default function AdminDashboard({ onNavigateToLive, onNavigateToWinners }
                   </button>
                 )}
 
+                {timerState.status === 'completed' && (
+                  <button
+                    onClick={() => handleRestartRound(timerState.roundId, rounds.find(r => r.id === timerState.roundId)?.name)}
+                    className="btn btn-lg btn-outline"
+                    style={{ color: '#f59e0b', borderColor: 'rgba(245,158,11,0.5)', background: 'rgba(245,158,11,0.08)' }}
+                  >
+                    <RotateCcw size={18} /> RESTART ROUND
+                  </button>
+                )}
+
                 <button onClick={handleNextRound} className="btn btn-lg btn-purple">
                   <SkipForward size={18} /> ADVANCE TO NEXT ROUND
                 </button>
@@ -404,15 +467,31 @@ export default function AdminDashboard({ onNavigateToLive, onNavigateToWinners }
 
                     <div>
                       <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '1rem' }}>
-                        <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>Duration:</span>
-                        <input
-                          type="number"
-                          defaultValue={r.durationMinutes || 30}
-                          onChange={(e) => setDurationInput(e.target.value)}
-                          className="cyber-input"
-                          style={{ width: '80px', padding: '0.3rem 0.5rem', fontSize: '0.85rem' }}
-                        />
-                        <span style={{ fontSize: '0.8rem', color: 'var(--text-dim)' }}>mins</span>
+                        <span style={{ fontSize: '0.75rem', fontWeight: 700, color: 'var(--text-dim)', textTransform: 'uppercase' }}>Duration:</span>
+                        {r.status === 'live' ? (
+                          <span style={{ fontSize: '0.85rem', fontWeight: 700, color: 'var(--accent-amber)' }}>{r.durationMinutes} min (live)</span>
+                        ) : (
+                          <>
+                            <input
+                              type="number"
+                              min="1"
+                              max="300"
+                              value={roundDurations[r.id] ?? r.durationMinutes ?? 30}
+                              onChange={(e) => setRoundDurations(prev => ({ ...prev, [r.id]: e.target.value }))}
+                              className="cyber-input"
+                              style={{ width: '72px', padding: '0.3rem 0.5rem', fontSize: '0.85rem', textAlign: 'center' }}
+                            />
+                            <span style={{ fontSize: '0.8rem', color: 'var(--text-dim)' }}>mins</span>
+                            <button
+                              onClick={() => handleSaveDuration(r.id)}
+                              disabled={durationSaving[r.id]}
+                              className="btn btn-sm btn-outline"
+                              style={{ padding: '0.25rem 0.6rem', fontSize: '0.75rem', color: durationSaving[r.id] ? 'var(--text-dim)' : 'var(--accent-cyan)', borderColor: 'var(--accent-cyan)' }}
+                            >
+                              {durationSaving[r.id] ? '...' : '💾'}
+                            </button>
+                          </>
+                        )}
                       </div>
 
                       <div style={{ display: 'flex', gap: '0.5rem' }}>
@@ -429,6 +508,15 @@ export default function AdminDashboard({ onNavigateToLive, onNavigateToWinners }
                             className="btn btn-sm btn-danger"
                           >
                             End
+                          </button>
+                        )}
+                        {r.status === 'completed' && (
+                          <button
+                            onClick={() => handleRestartRound(r.id, r.name)}
+                            className="btn btn-sm"
+                            style={{ background: 'rgba(245,158,11,0.15)', color: '#f59e0b', border: '1px solid rgba(245,158,11,0.4)', flex: 1 }}
+                          >
+                            <RotateCcw size={13} /> Restart
                           </button>
                         )}
                       </div>

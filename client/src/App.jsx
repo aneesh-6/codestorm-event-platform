@@ -78,6 +78,15 @@ function AppContent() {
     return (
       <LiveProjectorScreen 
         onExit={() => setCurrentView((isAdmin || isCoordinator) ? 'manage' : 'dashboard')} 
+        onViewRound={(roundId) => {
+          if (isAdmin || isCoordinator) {
+            setCurrentView('manage');
+          } else {
+            if (roundId === 1) setCurrentView('round1');
+            else if (roundId === 2) setCurrentView('round2');
+            else if (roundId === 3) setCurrentView('round3');
+          }
+        }}
       />
     );
   }

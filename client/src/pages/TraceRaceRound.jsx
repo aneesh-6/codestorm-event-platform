@@ -77,6 +77,24 @@ export default function TraceRaceRound({ onBackToDashboard }) {
     }).catch(() => {});
   };
 
+  const handleTextAnswerChange = (val) => {
+    if (!currentQ || submittedAnswers[currentQ.id]) return;
+
+    setSelectedAnswers(prev => ({ ...prev, [currentQ.id]: val }));
+
+    clearTimeout(window._autoSaveTimerTrace);
+    window._autoSaveTimerTrace = setTimeout(() => {
+      authFetch('/api/progress/save', {
+        method: 'POST',
+        body: JSON.stringify({
+          roundId: 2,
+          questionId: currentQ.id,
+          codeOrAnswer: val
+        })
+      }).catch(() => {});
+    }, 600);
+  };
+
   const handleToggleFlag = () => {
     if (!currentQ) return;
     setFlagged(prev => ({ ...prev, [currentQ.id]: !prev[currentQ.id] }));
@@ -85,8 +103,8 @@ export default function TraceRaceRound({ onBackToDashboard }) {
   const handleSubmitAnswer = async () => {
     if (!currentQ) return;
     const answer = selectedAnswers[currentQ.id];
-    if (!answer) {
-      alert('Please select an option before submitting.');
+    if (!answer || !String(answer).trim()) {
+      alert('Please enter or select an answer before submitting.');
       return;
     }
 
@@ -212,7 +230,7 @@ export default function TraceRaceRound({ onBackToDashboard }) {
 
                 <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                   <span className="badge badge-primary">
-                    +{currentQ.points || 10} PTS / -{currentQ.negativePoints || 2} NEG
+                    +{currentQ.points || 10} PTS
                   </span>
 
                   <button
@@ -271,60 +289,92 @@ export default function TraceRaceRound({ onBackToDashboard }) {
                 </div>
               )}
 
-              {/* Options */}
+              {/* Answer Input Section: Options or Text Output */}
               <div style={{ marginBottom: '28px' }}>
                 <div style={{ fontSize: '0.8125rem', color: 'var(--text-muted)', fontWeight: 700, textTransform: 'uppercase', marginBottom: '12px' }}>
-                  SELECT ANSWER:
+                  {currentQ.options && currentQ.options.length > 0 ? 'SELECT ANSWER:' : 'ENTER PREDICTED OUTPUT:'}
                 </div>
 
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-                  {currentQ.options?.map((opt) => {
-                    const isSelected = selectedAnswers[currentQ.id] === opt.id;
-                    const isLocked = submittedAnswers[currentQ.id];
+                {currentQ.options && currentQ.options.length > 0 ? (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                    {currentQ.options.map((opt) => {
+                      const isSelected = selectedAnswers[currentQ.id] === opt.id;
+                      const isLocked = submittedAnswers[currentQ.id];
 
-                    return (
-                      <div
-                        key={opt.id}
-                        onClick={() => handleSelectOption(opt.id)}
-                        style={{
-                          display: 'flex',
-                          alignItems: 'center',
-                          gap: '14px',
-                          padding: '14px 18px',
-                          borderRadius: 'var(--radius-md)',
-                          border: `1.5px solid ${isSelected ? 'var(--primary)' : 'var(--border)'}`,
-                          background: isSelected ? 'rgba(26, 45, 90, 0.05)' : '#ffffff',
-                          cursor: isLocked ? 'not-allowed' : 'pointer',
-                          transition: 'var(--transition)'
-                        }}
-                      >
-                        <div style={{
-                          width: '28px',
-                          height: '28px',
-                          borderRadius: '50%',
-                          display: 'flex',
-                          alignItems: 'center',
-                          justifyContent: 'center',
-                          fontWeight: 700,
-                          fontSize: '0.85rem',
-                          background: isSelected ? 'var(--primary)' : 'var(--bg-soft)',
-                          color: isSelected ? '#ffffff' : 'var(--text-muted)',
-                          border: `1px solid ${isSelected ? 'var(--primary)' : 'var(--border)'}`
-                        }}>
-                          {opt.id}
+                      return (
+                        <div
+                          key={opt.id}
+                          onClick={() => handleSelectOption(opt.id)}
+                          style={{
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: '14px',
+                            padding: '14px 18px',
+                            borderRadius: 'var(--radius-md)',
+                            border: `1.5px solid ${isSelected ? 'var(--primary)' : 'var(--border)'}`,
+                            background: isSelected ? 'rgba(26, 45, 90, 0.05)' : '#ffffff',
+                            cursor: isLocked ? 'not-allowed' : 'pointer',
+                            transition: 'var(--transition)'
+                          }}
+                        >
+                          <div style={{
+                            width: '28px',
+                            height: '28px',
+                            borderRadius: '50%',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            fontWeight: 700,
+                            fontSize: '0.85rem',
+                            background: isSelected ? 'var(--primary)' : 'var(--bg-soft)',
+                            color: isSelected ? '#ffffff' : 'var(--text-muted)',
+                            border: `1px solid ${isSelected ? 'var(--primary)' : 'var(--border)'}`
+                          }}>
+                            {opt.id}
+                          </div>
+                          <div style={{
+                            fontSize: '0.9375rem',
+                            fontWeight: isSelected ? 600 : 400,
+                            color: isSelected ? 'var(--primary)' : 'var(--text)',
+                            fontFamily: 'var(--font-mono)'
+                          }}>
+                            {opt.text}
+                          </div>
                         </div>
-                        <div style={{
-                          fontSize: '0.9375rem',
-                          fontWeight: isSelected ? 600 : 400,
-                          color: isSelected ? 'var(--primary)' : 'var(--text)',
-                          fontFamily: 'var(--font-mono)'
-                        }}>
-                          {opt.text}
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
+                      );
+                    })}
+                  </div>
+                ) : (
+                  <div>
+                    <textarea
+                      rows={5}
+                      value={selectedAnswers[currentQ.id] || ''}
+                      onChange={(e) => handleTextAnswerChange(e.target.value)}
+                      disabled={submittedAnswers[currentQ.id]}
+                      placeholder="Type the exact output generated by the program here (preserve newlines and spacing)..."
+                      style={{
+                        width: '100%',
+                        padding: '14px 16px',
+                        fontFamily: 'var(--font-mono)',
+                        fontSize: '0.95rem',
+                        lineHeight: 1.6,
+                        borderRadius: 'var(--radius-md)',
+                        border: '1.5px solid var(--border)',
+                        background: submittedAnswers[currentQ.id] ? 'var(--bg-soft)' : '#f8fafc',
+                        color: 'var(--text)',
+                        resize: 'vertical',
+                        outline: 'none',
+                        boxShadow: 'inset 0 1px 2px rgba(0,0,0,0.04)'
+                      }}
+                    />
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '6px', fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+                      <span>Tip: Ensure character casing and line breaks match what the program prints to the console.</span>
+                      {selectedAnswers[currentQ.id] && !submittedAnswers[currentQ.id] && (
+                        <span style={{ color: 'var(--teal)', fontWeight: 600 }}>Draft saved</span>
+                      )}
+                    </div>
+                  </div>
+                )}
               </div>
 
               {/* Bottom Navigation */}

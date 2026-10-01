@@ -128,6 +128,10 @@ function AppContent() {
           <PrivateManagementCenter
             onNavigateToLive={() => setCurrentView('live')}
             onNavigateToWinners={() => setCurrentView('winners')}
+            onNavigateToCertificate={(pId) => {
+              if (pId) sessionStorage.setItem('codestorm_preview_participant', pId);
+              setCurrentView('certificate');
+            }}
           />
         )}
 

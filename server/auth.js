@@ -1,7 +1,7 @@
 import jwt from 'jsonwebtoken';
 import db from './database.js';
 
-const JWT_SECRET = process.env.JWT_SECRET || 'codestorm-2026-super-secret-key-mrem-cseds';
+export const JWT_SECRET = process.env.JWT_SECRET || 'codestorm-2026-super-secret-key-mrem-cseds';
 
 export function generateToken(user) {
   return jwt.sign(

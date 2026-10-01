@@ -6,8 +6,9 @@ import bcrypt from 'bcryptjs';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import jwt from 'jsonwebtoken';
 import db from './database.js';
-import { generateToken, authMiddleware, requireRole } from './auth.js';
+import { generateToken, authMiddleware, requireRole, JWT_SECRET } from './auth.js';
 import { evaluateSubmission, runCustomCode } from './executionService.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -1216,37 +1217,26 @@ app.post('/api/admin/sync-registrations', (req, res) => {
 // -------------------------------------------------------------
 // 11. CERTIFICATES DATA
 // -------------------------------------------------------------
+app.get('/api/certificates', authMiddleware, requireRole('admin', 'coordinator'), (req, res) => {
+  const certs = db.getAllCertificates();
+  res.json({ success: true, certificates: certs });
+});
+
 app.get('/api/certificates/:participantId', (req, res) => {
-  const participant = db.findParticipantById(req.params.participantId);
-  if (!participant) return res.status(404).json({ error: 'Participant not found' });
-
-  const participants = [...db.getParticipants()].sort((a, b) => b.score - a.score);
-  const rank = participants.findIndex(p => p.id === participant.id) + 1;
-
-  let achievement = 'Certificate of Participation';
-  if (rank === 1) achievement = 'Winner — 1st Place Trophy';
-  else if (rank === 2) achievement = 'Runner-Up — 2nd Place Silver';
-  else if (rank === 3) achievement = '2nd Runner-Up — 3rd Place Bronze';
-  else if (rank <= 10) achievement = 'Distinguished Finalist — Top 10';
-
-  res.json({
-    certificateId: `CS26-CERT-${participant.participantId.replace(/[^a-zA-Z0-9]/g, '')}`,
-    participantName: participant.name,
-    participantId: participant.participantId,
-    college: participant.college,
-    branch: participant.branch,
-    year: participant.year,
-    achievement,
-    rank,
-    score: participant.score,
-    eventName: 'CODESTORM 2026',
-    date: 'September 23, 2026',
-    organizer: 'Department of CSE – Data Science, MREM',
-    signatories: [
-      { name: 'Faculty Lead & HOD', title: 'Department of CSE – Data Science, MREM' },
-      { name: 'Faculty Coordinator', title: 'CodeStorm 2026 Organizing Committee' }
-    ]
-  });
+  let preview = null;
+  const authHeader = req.headers.authorization;
+  if (authHeader && authHeader.startsWith('Bearer ')) {
+    try {
+      const token = authHeader.split(' ')[1];
+      const decoded = jwt.verify(token, JWT_SECRET);
+      if (decoded && (decoded.role === 'admin' || decoded.role === 'coordinator')) {
+        preview = req.query.previewType || req.query.type || null;
+      }
+    } catch (e) {}
+  }
+  const cert = db.getCertificate(req.params.participantId, preview);
+  if (!cert) return res.status(404).json({ error: 'Participant or certificate not found' });
+  res.json(cert);
 });
 
 // Serve frontend build if available

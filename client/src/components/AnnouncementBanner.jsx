@@ -9,7 +9,7 @@ export default function AnnouncementBanner() {
     <>
       {/* Anti-cheat violation alert banner */}
       {antiCheatWarning && (
-        <div style={{
+        <div className="no-print" style={{
           background: 'linear-gradient(90deg, #dc2626 0%, #991b1b 100%)',
           color: '#fff',
           padding: '0.65rem 1.5rem',
@@ -39,7 +39,7 @@ export default function AnnouncementBanner() {
 
       {/* Broadcast Announcement Pop */}
       {activeAnnouncement && (
-        <div style={{
+        <div className="no-print" style={{
           background: activeAnnouncement.priority === 'urgent' 
             ? 'linear-gradient(90deg, rgba(239, 68, 68, 0.95), rgba(185, 28, 28, 0.95))' 
             : 'linear-gradient(90deg, rgba(14, 165, 233, 0.95), rgba(59, 130, 246, 0.95))',

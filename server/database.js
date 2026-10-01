@@ -3,7 +3,6 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import crypto from 'crypto';
 import bcrypt from 'bcryptjs';
-import { OFFICIAL_QUESTIONS } from './load_official_questions.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -152,7 +151,15 @@ function getInitialData() {
     }
   ];
 
-  const questions = OFFICIAL_QUESTIONS;
+  let questions = [];
+  try {
+    if (fs.existsSync(DB_FILE)) {
+      const existing = JSON.parse(fs.readFileSync(DB_FILE, 'utf-8'));
+      if (Array.isArray(existing.questions)) questions = existing.questions;
+    }
+  } catch (err) {
+    questions = [];
+  }
 
   const submissions = [];
 
@@ -559,9 +566,7 @@ class Database {
 
   save() {
     try {
-      const tempPath = `${DB_FILE}.tmp`;
-      fs.writeFileSync(tempPath, JSON.stringify(this.data, null, 2), 'utf-8');
-      fs.renameSync(tempPath, DB_FILE);
+      fs.writeFileSync(DB_FILE, JSON.stringify(this.data, null, 2), 'utf-8');
     } catch (err) {
       console.error('❌ Failed saving database:', err);
     }
@@ -1056,6 +1061,184 @@ class Database {
     Object.assign(this.data.eventSettings, updates);
     this.save();
     return this.data.eventSettings;
+  }
+
+  // --- Certificates ---
+  getCertificate(participantId, previewType = null) {
+    if (!this.data.certificates) {
+      this.data.certificates = {};
+    }
+    const participant = this.findParticipantById(participantId);
+    if (!participant) return null;
+
+    const eventSettings = this.getEventSettings() || {};
+    const isFinalized = Boolean(eventSettings.resultsPublished);
+    const eventDate = eventSettings.eventDate || 'October 2, 2026';
+
+    // Compute official rankings across all participants strictly by competition scores
+    // NO negative marking (Math.max(0, p.score)).
+    // Tie breaks: solvedCount descending, then penalty ascending.
+    const participants = [...this.getParticipants()].sort((a, b) => {
+      const scoreA = Math.max(0, a.score || 0);
+      const scoreB = Math.max(0, b.score || 0);
+      if (scoreB !== scoreA) return scoreB - scoreA;
+      const solvedA = a.solvedCount || 0;
+      const solvedB = b.solvedCount || 0;
+      if (solvedB !== solvedA) return solvedB - solvedA;
+      const penA = a.penalty || 0;
+      const penB = b.penalty || 0;
+      return penA - penB;
+    });
+
+    const rankIndex = participants.findIndex(p => p.id === participant.id || p.participantId === participant.participantId);
+    const officialRank = rankIndex >= 0 ? rankIndex + 1 : participants.length;
+    const participantScore = Math.max(0, participant.score || 0);
+
+    // Tie Handling & Safety (Requirement 16 & 17)
+    // If top candidates have identical score, solvedCount, and penalty, flag for Faculty Review
+    let tieFlag = false;
+    let tieMessage = null;
+    if (rankIndex === 0 && participants.length > 1) {
+      const p1 = participants[0];
+      const p2 = participants[1];
+      if (p1.score === p2.score && (p1.solvedCount || 0) === (p2.solvedCount || 0) && (p1.penalty || 0) === (p2.penalty || 0) && p1.score > 0) {
+        tieFlag = true;
+        tieMessage = 'Tie detected for 1st Position. Flagged for Admin/Faculty review.';
+      }
+    } else if (rankIndex === 1 && participants.length > 2) {
+      const p2 = participants[1];
+      const p3 = participants[2];
+      if (p2.score === p3.score && (p2.solvedCount || 0) === (p3.solvedCount || 0) && (p2.penalty || 0) === (p3.penalty || 0) && p2.score > 0) {
+        tieFlag = true;
+        tieMessage = 'Tie detected for 2nd Position. Flagged for Admin/Faculty review.';
+      }
+    }
+
+    // Automatic Certificate Assignment (Requirements 13, 14, 17)
+    // Never generate a Winner certificate from placeholder data or 0 points
+    let certType = 'participation';
+    let status = isFinalized ? 'OFFICIALLY ISSUED' : 'PENDING RESULT';
+
+    if (isFinalized) {
+      if (officialRank === 1 && participantScore > 0 && !tieFlag) {
+        certType = 'winner';
+      } else if (officialRank === 2 && participantScore > 0 && !tieFlag) {
+        certType = 'runner_up';
+      } else {
+        certType = 'participation';
+      }
+    } else {
+      certType = 'participation';
+    }
+
+    // Allow previewType ONLY when explicitly requested for QA/Visual Verification (Requirement 31)
+    if (previewType && ['winner', 'runner_up', 'participation'].includes(previewType.toLowerCase())) {
+      certType = previewType.toLowerCase();
+    }
+
+    // Title and Achievement Text (Requirements 10 & 18)
+    let title = 'CERTIFICATE OF PARTICIPATION';
+    let badgeText = 'CODESTORM 2026 PARTICIPANT';
+    let achievement = 'has successfully participated in CODESTORM 2026, a 3-round coding event organized by Malla Reddy Engineering College and Management Sciences.';
+
+    if (certType === 'winner') {
+      title = 'CERTIFICATE OF MERIT';
+      badgeText = 'WINNER / 1ST POSITION';
+      achievement = 'has secured the Winner / 1st Position in CODESTORM 2026, a 3-round coding event organized by Malla Reddy Engineering College and Management Sciences.';
+    } else if (certType === 'runner_up') {
+      title = 'CERTIFICATE OF MERIT';
+      badgeText = 'RUNNER-UP / 2ND POSITION';
+      achievement = 'has secured the Runner-Up / 2nd Position in CODESTORM 2026, a 3-round coding event organized by Malla Reddy Engineering College and Management Sciences.';
+    }
+
+    // Unique Persistent Certificate Number (Requirement 27)
+    // Stored permanently in this.data.certificates[participant.participantId]
+    const certKey = participant.participantId;
+    const numMatch = String(participant.participantId).match(/(\d{4})$/);
+    const seqStr = numMatch ? numMatch[1] : String(participant.participantId.replace(/\D/g, '') || '1042').slice(-4).padStart(4, '0');
+    const typeCode = certType === 'winner' ? 'WIN' : (certType === 'runner_up' ? 'RUN' : 'PRT');
+    const expectedCertNum = `CS26-MREM-${typeCode}-${seqStr}`;
+
+    if (!this.data.certificates[certKey]) {
+      this.data.certificates[certKey] = {
+        certificateNumber: expectedCertNum,
+        certificateType: certType,
+        issuedDate: eventDate,
+        createdAt: new Date().toISOString()
+      };
+      this.save();
+    }
+
+    const record = this.data.certificates[certKey];
+    // Keep certificate number updated with finalized type and standard 4-digit format
+    if (record.certificateType !== certType || !record.certificateNumber.match(/^CS26-MREM-(WIN|RUN|PRT)-\d{4}$/)) {
+      record.certificateType = certType;
+      record.certificateNumber = expectedCertNum;
+      this.save();
+    }
+
+    const displayRank = isFinalized
+      ? (certType === 'winner' ? 'Rank #1' : (certType === 'runner_up' ? 'Rank #2' : (participantScore > 0 ? `Rank #${officialRank}` : 'Participant')))
+      : (participantScore > 0 ? `Rank #${officialRank}` : 'Pending');
+
+    return {
+      certificateNumber: record.certificateNumber,
+      certificateType: certType,
+      status,
+      isFinalized,
+      title,
+      badgeText,
+      achievement,
+      participantName: participant.name,
+      participantId: participant.participantId,
+      registrationId: participant.registrationId || participant.participantId,
+      college: 'Malla Reddy Engineering College and Management Sciences',
+      department: 'Department of CSE – Data Science',
+      branch: participant.branch || 'CSE – Data Science',
+      year: participant.year || '3rd Year',
+      rank: displayRank,
+      score: participantScore,
+      tieFlag,
+      tieMessage,
+      eventName: 'CODESTORM 2026',
+      symposiumName: 'COMPETITIVE PROGRAMMING SYMPOSIUM',
+      eventDate: eventDate,
+      issuedDate: record.issuedDate || eventDate
+    };
+  }
+
+  // --- Admin/Faculty Certificates Summary Registry (Requirement 29) ---
+  getAllCertificates() {
+    const participants = [...this.getParticipants()].sort((a, b) => {
+      const scoreA = Math.max(0, a.score || 0);
+      const scoreB = Math.max(0, b.score || 0);
+      if (scoreB !== scoreA) return scoreB - scoreA;
+      const solvedA = a.solvedCount || 0;
+      const solvedB = b.solvedCount || 0;
+      if (solvedB !== solvedA) return solvedB - solvedA;
+      const penA = a.penalty || 0;
+      const penB = b.penalty || 0;
+      return penA - penB;
+    });
+
+    return participants.map((p, idx) => {
+      const cert = this.getCertificate(p.participantId);
+      return {
+        id: p.id,
+        participantName: p.name,
+        participantId: p.participantId,
+        registrationId: p.registrationId || p.participantId,
+        branch: p.branch,
+        year: p.year,
+        finalScore: p.score || 0,
+        rank: idx + 1,
+        certificateType: cert ? cert.certificateType : 'participation',
+        certificateNumber: cert ? cert.certificateNumber : `CS26-MREM-PRT-${(String(p.participantId).match(/(\d{4})$/) || ['','1042'])[1]}`,
+        certificateStatus: cert ? cert.status : 'PENDING RESULT',
+        tieFlag: cert ? cert.tieFlag : false,
+        tieMessage: cert ? cert.tieMessage : null
+      };
+    });
   }
 
   // --- Reset Entire Database to Seed ---

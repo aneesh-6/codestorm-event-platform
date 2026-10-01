@@ -34,7 +34,7 @@ import {
   Sliders
 } from 'lucide-react';
 
-export default function PrivateManagementCenter({ onNavigateToLive, onNavigateToWinners }) {
+export default function PrivateManagementCenter({ onNavigateToLive, onNavigateToWinners, onNavigateToCertificate }) {
   const { authFetch, user } = useAuth();
   const { timerState } = useSocket();
 
@@ -1532,36 +1532,115 @@ export default function PrivateManagementCenter({ onNavigateToLive, onNavigateTo
               </div>
             </div>
 
-            {/* Standings Summary Table */}
+            {/* Official Certificate & Results Registry Table (Requirement 29) */}
             <div style={{ overflowX: 'auto' }}>
               <table className="codestorm-table" style={{ width: '100%' }}>
                 <thead>
                   <tr>
-                    <th style={{ width: '70px', textAlign: 'center' }}>Rank</th>
-                    <th>Participant</th>
+                    <th style={{ width: '60px', textAlign: 'center' }}>Rank</th>
+                    <th>Participant Name</th>
                     <th>Participant ID</th>
-                    <th>Branch</th>
-                    <th style={{ textAlign: 'center' }}>Problems</th>
-                    <th style={{ textAlign: 'right' }}>Score</th>
+                    <th>Registration ID</th>
+                    <th style={{ textAlign: 'right' }}>Final Score</th>
+                    <th style={{ textAlign: 'center' }}>Certificate Type</th>
+                    <th>Certificate Number</th>
+                    <th style={{ textAlign: 'center' }}>Status</th>
+                    <th style={{ textAlign: 'center' }}>Action</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {[...participants].sort((a, b) => b.score - a.score).map((p, idx) => (
-                    <tr key={p.id}>
-                      <td style={{ textAlign: 'center', fontWeight: 800 }}>
-                        {idx === 0 ? '🥇 1' : (idx === 1 ? '🥈 2' : (idx === 2 ? '🥉 3' : `#${idx + 1}`))}
-                      </td>
-                      <td style={{ fontWeight: 700, color: 'var(--color-navy)' }}>{p.name}</td>
-                      <td style={{ fontFamily: 'monospace', color: '#0284c7' }}>{p.participantId}</td>
-                      <td>{p.branch} ({p.year})</td>
-                      <td style={{ textAlign: 'center' }}>{p.solvedCount}</td>
-                      <td style={{ textAlign: 'right', fontWeight: 900, color: 'var(--color-navy)' }}>{p.score}</td>
-                    </tr>
-                  ))}
+                  {(() => {
+                    const isFinalized = Boolean(eventData?.eventSettings?.resultsPublished);
+                    const sorted = [...participants].sort((a, b) => {
+                      const scoreA = Math.max(0, a.score || 0);
+                      const scoreB = Math.max(0, b.score || 0);
+                      if (scoreB !== scoreA) return scoreB - scoreA;
+                      const solvedA = a.solvedCount || 0;
+                      const solvedB = b.solvedCount || 0;
+                      if (solvedB !== solvedA) return solvedB - solvedA;
+                      return (a.penalty || 0) - (b.penalty || 0);
+                    });
+
+                    return sorted.map((p, idx) => {
+                      const rank = idx + 1;
+                      const score = Math.max(0, p.score || 0);
+                      let certType = 'participation';
+                      if (isFinalized && score > 0) {
+                        if (rank === 1) certType = 'winner';
+                        else if (rank === 2) certType = 'runner_up';
+                      }
+                      const seqStr = String(p.participantId.replace(/\D/g, '') || '1042').padStart(4, '0');
+                      const typeCode = certType === 'winner' ? 'WIN' : (certType === 'runner_up' ? 'RUN' : 'PRT');
+                      const certNumber = `CS26-MREM-${typeCode}-${seqStr}`;
+                      const certStatus = isFinalized ? 'OFFICIALLY ISSUED' : 'PENDING RESULT';
+
+                      return (
+                        <tr key={p.id}>
+                          <td style={{ textAlign: 'center', fontWeight: 800 }}>
+                            {rank === 1 && score > 0 ? '🥇 1' : (rank === 2 && score > 0 ? '🥈 2' : `#${rank}`)}
+                          </td>
+                          <td style={{ fontWeight: 700, color: 'var(--color-navy)' }}>{p.name}</td>
+                          <td style={{ fontFamily: 'monospace', color: '#0284c7' }}>{p.participantId}</td>
+                          <td style={{ fontFamily: 'monospace', color: '#475569', fontSize: '0.85rem' }}>
+                            {p.registrationId || p.participantId}
+                          </td>
+                          <td style={{ textAlign: 'right', fontWeight: 900, color: 'var(--color-navy)' }}>
+                            {score} PTS
+                          </td>
+                          <td style={{ textAlign: 'center' }}>
+                            <span style={{
+                              padding: '2px 8px',
+                              borderRadius: '9999px',
+                              fontSize: '0.72rem',
+                              fontWeight: 800,
+                              textTransform: 'uppercase',
+                              background: certType === 'winner' ? '#fef3c7' : (certType === 'runner_up' ? '#f1f5f9' : '#ccfbf1'),
+                              color: certType === 'winner' ? '#b45309' : (certType === 'runner_up' ? '#334155' : '#0f766e'),
+                              border: `1px solid ${certType === 'winner' ? '#fde68a' : (certType === 'runner_up' ? '#cbd5e1' : '#99f6e4')}`
+                            }}>
+                              {certType === 'winner' ? '🏆 Winner' : (certType === 'runner_up' ? '🥈 Runner-Up' : '🎓 Participation')}
+                            </span>
+                          </td>
+                          <td style={{ fontFamily: 'monospace', fontSize: '0.82rem', color: '#0d9488' }}>
+                            {certNumber}
+                          </td>
+                          <td style={{ textAlign: 'center' }}>
+                            <span style={{
+                              fontSize: '0.72rem',
+                              fontWeight: 700,
+                              color: isFinalized ? '#059669' : '#d97706',
+                              background: isFinalized ? '#ecfdf5' : '#fffbeb',
+                              padding: '2px 6px',
+                              borderRadius: '4px'
+                            }}>
+                              {certStatus}
+                            </span>
+                          </td>
+                          <td style={{ textAlign: 'center' }}>
+                            <button
+                              onClick={() => {
+                                if (onNavigateToCertificate) {
+                                  onNavigateToCertificate(p.participantId);
+                                } else {
+                                  sessionStorage.setItem('codestorm_preview_participant', p.participantId);
+                                  window.location.hash = '#certificate';
+                                }
+                              }}
+                              className="btn btn-ghost btn-sm"
+                              style={{ fontSize: '0.75rem', padding: '0.2rem 0.55rem', color: 'var(--primary)' }}
+                              title="View Official Certificate"
+                            >
+                              View Certificate
+                            </button>
+                          </td>
+                        </tr>
+                      );
+                    });
+                  })()}
                   {participants.length === 0 && (
                     <tr>
-                      <td colSpan="6" style={{ textAlign: 'center', padding: '2rem', color: 'var(--text-muted)' }}>
-                        No participant results available yet.
+                      <td colSpan="9" style={{ textAlign: 'center', padding: '2rem', color: 'var(--text-muted)' }}>
+                        No participant results or certificates available yet.
                       </td>
                     </tr>
                   )}

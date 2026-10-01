@@ -34,7 +34,7 @@ export default function Navbar({ currentView, setCurrentView }) {
   };
 
   return (
-    <header style={{
+    <header className="no-print" style={{
       position: 'sticky',
       top: 0,
       zIndex: 1000,
@@ -167,6 +167,12 @@ export default function Navbar({ currentView, setCurrentView }) {
                 <Sliders size={14} /> ADMIN DASHBOARD
               </button>
               <button 
+                onClick={() => setCurrentView('certificate')}
+                className={`btn btn-sm ${currentView === 'certificate' ? 'btn-primary' : 'btn-outline'}`}
+              >
+                <Award size={14} /> Certificates
+              </button>
+              <button 
                 onClick={() => setCurrentView('live')}
                 className="btn btn-sm btn-outline"
                 title="Auditorium Projector Display"
@@ -183,6 +189,12 @@ export default function Navbar({ currentView, setCurrentView }) {
                 className={`btn btn-sm ${currentView === 'manage' ? 'btn-primary' : 'btn-outline'}`}
               >
                 <Sliders size={14} /> FACULTY COORDINATOR DASHBOARD
+              </button>
+              <button 
+                onClick={() => setCurrentView('certificate')}
+                className={`btn btn-sm ${currentView === 'certificate' ? 'btn-primary' : 'btn-outline'}`}
+              >
+                <Award size={14} /> Certificates
               </button>
               <button 
                 onClick={() => setCurrentView('live')}

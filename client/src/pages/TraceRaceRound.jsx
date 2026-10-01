@@ -9,7 +9,8 @@ import {
   ArrowRight, 
   ArrowLeft, 
   Bookmark,
-  Check
+  Check,
+  XCircle
 } from 'lucide-react';
 
 export default function TraceRaceRound({ onBackToDashboard }) {
@@ -101,14 +102,15 @@ export default function TraceRaceRound({ onBackToDashboard }) {
   };
 
   const handleSubmitAnswer = async () => {
-    if (!currentQ) return;
+    if (!currentQ || isSubmitting) return;
     const answer = selectedAnswers[currentQ.id];
     if (!answer || !String(answer).trim()) {
-      alert('Please enter or select an answer before submitting.');
+      setToastMessage({ type: 'error', message: 'Please enter or select an answer before submitting.' });
       return;
     }
 
     setIsSubmitting(true);
+    setToastMessage({ type: 'loading', message: 'Submitting...' });
     try {
       const res = await authFetch('/api/submit', {
         method: 'POST',
@@ -122,19 +124,29 @@ export default function TraceRaceRound({ onBackToDashboard }) {
 
       const data = await res.json();
       if (!res.ok) {
-        alert(data.error || 'Submission failed');
+        setToastMessage({ 
+          type: 'error', 
+          message: 'Submission failed. Please try again.' + (data.error ? ` (${data.error})` : '') 
+        });
         return;
       }
 
       setSubmittedAnswers(prev => ({ ...prev, [currentQ.id]: true }));
-      setToastMessage(`Answer for Question ${activeIdx + 1} submitted!`);
-      setTimeout(() => setToastMessage(null), 3500);
+      setToastMessage({ type: 'success', message: 'Answer submitted successfully.' });
+      setTimeout(() => {
+        setToastMessage(prev => prev?.type === 'success' ? null : prev);
+      }, 5000);
 
       if (activeIdx < questions.length - 1) {
-        setActiveIdx(activeIdx + 1);
+        setTimeout(() => {
+          setActiveIdx(prev => prev + 1);
+        }, 1200);
       }
     } catch (err) {
-      alert('Error submitting answer: ' + err.message);
+      setToastMessage({ 
+        type: 'error', 
+        message: 'Submission failed. Please try again.' + (err.message ? ` (${err.message})` : '') 
+      });
     } finally {
       setIsSubmitting(false);
     }
@@ -200,20 +212,22 @@ export default function TraceRaceRound({ onBackToDashboard }) {
 
       {toastMessage && (
         <div style={{
-          background: '#ecfdf5',
-          border: '1px solid #a7f3d0',
+          background: toastMessage.type === 'success' ? '#ecfdf5' : (toastMessage.type === 'error' ? '#fef2f2' : '#eff6ff'),
+          border: `1px solid ${toastMessage.type === 'success' ? '#a7f3d0' : (toastMessage.type === 'error' ? '#fecaca' : '#bfdbfe')}`,
           borderRadius: 'var(--radius-md)',
           padding: '12px 16px',
-          color: '#059669',
+          color: toastMessage.type === 'success' ? '#059669' : (toastMessage.type === 'error' ? '#dc2626' : '#1d4ed8'),
           fontSize: '0.875rem',
-          fontWeight: 600,
+          fontWeight: 700,
           marginBottom: '16px',
           display: 'flex',
           alignItems: 'center',
           gap: '8px'
         }}>
-          <Check size={16} />
-          <span>{toastMessage}</span>
+          {toastMessage.type === 'success' && <Check size={18} />}
+          {toastMessage.type === 'error' && <XCircle size={18} />}
+          {toastMessage.type === 'loading' && <Clock size={18} />}
+          <span>{toastMessage.message || toastMessage}</span>
         </div>
       )}
 
@@ -399,7 +413,7 @@ export default function TraceRaceRound({ onBackToDashboard }) {
                       className="btn btn-secondary"
                     >
                       <Send size={16} />
-                      <span>{isSubmitting ? 'Recording...' : 'Submit Answer'}</span>
+                      <span>{isSubmitting ? 'Submitting...' : 'Submit Answer'}</span>
                     </button>
                   )}
 

@@ -10,7 +10,8 @@ import {
   Check, 
   Save, 
   CheckCircle, 
-  XCircle
+  XCircle,
+  AlertCircle
 } from 'lucide-react';
 
 const LANGUAGES = [
@@ -37,6 +38,10 @@ export default function CodeChallengeRound({ onBackToDashboard }) {
   const [mySubmissions, setMySubmissions] = useState([]);
   const [activeBottomTab, setActiveBottomTab] = useState('tests');
   const [saveStatus, setSaveStatus] = useState('Saved');
+  const [draftCodeMap, setDraftCodeMap] = useState({});
+  const [draftLangMap, setDraftLangMap] = useState({});
+  const [feedback, setFeedback] = useState(null);
+  const [attemptedMap, setAttemptedMap] = useState({});
 
   useEffect(() => {
     authFetch('/api/questions/round/3')
@@ -51,20 +56,57 @@ export default function CodeChallengeRound({ onBackToDashboard }) {
         }
       })
       .catch(err => console.error(err));
+
+    authFetch('/api/submissions/my?roundId=3')
+      .then(r => r.json())
+      .then(subs => {
+        const att = {};
+        subs.forEach(s => { att[s.questionId] = true; });
+        setAttemptedMap(att);
+      })
+      .catch(() => {});
   }, []);
 
   const loadQuestionCode = (q, lang) => {
+    // 1. In-memory draft check
+    if (draftCodeMap[q.id] !== undefined) {
+      setEditorCode(draftCodeMap[q.id]);
+      if (draftLangMap[q.id]) setSelectedLang(draftLangMap[q.id]);
+      setSaveStatus('Draft restored');
+      loadSubmissionsForQ(q.id);
+      return;
+    }
+
+    // 2. Saved progress check
     authFetch(`/api/progress/3/${q.id}`)
       .then(r => r.json())
       .then(saved => {
         if (saved && saved.codeOrAnswer) {
           setEditorCode(saved.codeOrAnswer);
           if (saved.selectedLanguage) setSelectedLang(saved.selectedLanguage);
+          setDraftCodeMap(prev => ({ ...prev, [q.id]: saved.codeOrAnswer }));
           setSaveStatus('Draft restored');
         } else {
-          const code = q.starterCode?.[lang] || q.starterCode?.python || '// Write solution here';
-          setEditorCode(code);
-          setSaveStatus('Template loaded');
+          // 3. Check previous submission or starter template
+          authFetch(`/api/submissions/my?roundId=3&questionId=${q.id}`)
+            .then(res => res.json())
+            .then(subs => {
+              if (subs && subs.length > 0 && subs[0].codeOrAnswer) {
+                setEditorCode(subs[0].codeOrAnswer);
+                if (subs[0].language) setSelectedLang(subs[0].language);
+                setDraftCodeMap(prev => ({ ...prev, [q.id]: subs[0].codeOrAnswer }));
+                setSaveStatus('Submitted solution loaded');
+              } else {
+                const code = q.starterCode?.[lang] || q.starterCode?.python || '// Write solution here';
+                setEditorCode(code);
+                setDraftCodeMap(prev => ({ ...prev, [q.id]: code }));
+                setSaveStatus('Template loaded');
+              }
+            })
+            .catch(() => {
+              const code = q.starterCode?.[lang] || q.starterCode?.python || '// Write solution here';
+              setEditorCode(code);
+            });
         }
       })
       .catch(() => {
@@ -78,24 +120,48 @@ export default function CodeChallengeRound({ onBackToDashboard }) {
   const loadSubmissionsForQ = (qId) => {
     authFetch(`/api/submissions/my?roundId=3&questionId=${qId}`)
       .then(r => r.json())
-      .then(subs => setMySubmissions(subs))
+      .then(subs => {
+        setMySubmissions(subs);
+        if (subs.length > 0) {
+          setAttemptedMap(prev => ({ ...prev, [qId]: true }));
+        }
+      })
       .catch(() => {});
   };
 
   const handleSelectQuestion = (idx) => {
+    const curQ = questions[activeIdx];
+    if (curQ && editorCode !== undefined) {
+      setDraftCodeMap(prev => ({ ...prev, [curQ.id]: editorCode }));
+      setDraftLangMap(prev => ({ ...prev, [curQ.id]: selectedLang }));
+    }
+
     setActiveIdx(idx);
-    const q = questions[idx];
-    loadQuestionCode(q, selectedLang);
+    setFeedback(null);
     setRunResult(null);
     setSubmissionResult(null);
+
+    const nextQ = questions[idx];
+    if (!nextQ) return;
+
+    if (draftCodeMap[nextQ.id] !== undefined) {
+      setEditorCode(draftCodeMap[nextQ.id]);
+      if (draftLangMap[nextQ.id]) setSelectedLang(draftLangMap[nextQ.id]);
+      setSaveStatus('Draft restored');
+      loadSubmissionsForQ(nextQ.id);
+    } else {
+      loadQuestionCode(nextQ, selectedLang);
+    }
   };
 
   const handleLanguageChange = (newLang) => {
     setSelectedLang(newLang);
     const q = questions[activeIdx];
     if (q) {
+      setDraftLangMap(prev => ({ ...prev, [q.id]: newLang }));
       const code = q.starterCode?.[newLang] || q.starterCode?.python || '';
       setEditorCode(code);
+      setDraftCodeMap(prev => ({ ...prev, [q.id]: code }));
     }
   };
 
@@ -104,6 +170,7 @@ export default function CodeChallengeRound({ onBackToDashboard }) {
     setSaveStatus('Saving...');
     const q = questions[activeIdx];
     if (q) {
+      setDraftCodeMap(prev => ({ ...prev, [q.id]: newVal }));
       clearTimeout(window._autoSaveTimer3);
       window._autoSaveTimer3 = setTimeout(() => {
         authFetch('/api/progress/save', {
@@ -117,7 +184,7 @@ export default function CodeChallengeRound({ onBackToDashboard }) {
         })
           .then(() => setSaveStatus('Auto-saved'))
           .catch(() => setSaveStatus('Save error'));
-      }, 1200);
+      }, 1000);
     }
   };
 
@@ -155,9 +222,10 @@ export default function CodeChallengeRound({ onBackToDashboard }) {
 
   const handleSubmitCode = async () => {
     const q = questions[activeIdx];
-    if (!q) return;
+    if (!q || isSubmitting || isRunning) return;
 
     setIsSubmitting(true);
+    setFeedback({ type: 'loading', message: 'Submitting...' });
     setActiveBottomTab('tests');
     setSubmissionResult(null);
 
@@ -174,14 +242,26 @@ export default function CodeChallengeRound({ onBackToDashboard }) {
 
       const data = await res.json();
       if (!res.ok) {
-        alert(data.error || 'Submission failed');
+        setFeedback({ 
+          type: 'error', 
+          message: 'Submission failed. Please try again.' + (data.error ? ` (${data.error})` : '') 
+        });
         return;
       }
 
       setSubmissionResult(data.submission);
+      setFeedback({ type: 'success', message: 'Answer submitted successfully.' });
+      setAttemptedMap(prev => ({ ...prev, [q.id]: true }));
       loadSubmissionsForQ(q.id);
+
+      setTimeout(() => {
+        setFeedback(prev => prev?.type === 'success' ? null : prev);
+      }, 6000);
     } catch (err) {
-      alert('Error submitting code: ' + err.message);
+      setFeedback({ 
+        type: 'error', 
+        message: 'Submission failed. Please try again.' + (err.message ? ` (${err.message})` : '') 
+      });
     } finally {
       setIsSubmitting(false);
     }
@@ -214,6 +294,14 @@ export default function CodeChallengeRound({ onBackToDashboard }) {
 
         {/* Problem Navigator */}
         <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+          <button
+            onClick={() => handleSelectQuestion(Math.max(0, activeIdx - 1))}
+            disabled={activeIdx === 0}
+            className="btn btn-sm btn-outline"
+            style={{ padding: '6px 12px', minHeight: '34px' }}
+          >
+            ← Prev
+          </button>
           {questions.map((q, idx) => (
             <button
               key={q.id}
@@ -224,6 +312,14 @@ export default function CodeChallengeRound({ onBackToDashboard }) {
               Problem {idx + 1}
             </button>
           ))}
+          <button
+            onClick={() => handleSelectQuestion(Math.min(questions.length - 1, activeIdx + 1))}
+            disabled={activeIdx === questions.length - 1}
+            className="btn btn-sm btn-outline"
+            style={{ padding: '6px 12px', minHeight: '34px' }}
+          >
+            Next →
+          </button>
         </div>
 
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '0.8125rem', color: 'var(--text-muted)' }}>
@@ -231,6 +327,26 @@ export default function CodeChallengeRound({ onBackToDashboard }) {
           <span>{saveStatus}</span>
         </div>
       </div>
+
+      {/* Submission Feedback Banner */}
+      {feedback && (
+        <div style={{
+          padding: '10px 24px',
+          background: feedback.type === 'loading' ? '#f0f9ff' : feedback.type === 'success' ? '#dcfce7' : '#fee2e2',
+          borderBottom: `1px solid ${feedback.type === 'loading' ? '#bae6fd' : feedback.type === 'success' ? '#86efac' : '#fca5a5'}`,
+          color: feedback.type === 'loading' ? '#0369a1' : feedback.type === 'success' ? '#15803d' : '#b91c1c',
+          display: 'flex',
+          alignItems: 'center',
+          gap: '10px',
+          fontSize: '0.875rem',
+          fontWeight: 600
+        }}>
+          {feedback.type === 'loading' && <span className="spinner" style={{ width: 14, height: 14, borderWidth: 2 }} />}
+          {feedback.type === 'success' && <CheckCircle size={16} />}
+          {feedback.type === 'error' && <AlertCircle size={16} />}
+          <span>{feedback.message}</span>
+        </div>
+      )}
 
       {/* Main Split Layout: Left Problem Statement & Right Editor */}
       <div style={{ display: 'grid', gridTemplateColumns: '44% 56%', flex: 1, overflow: 'hidden' }}>
@@ -245,7 +361,7 @@ export default function CodeChallengeRound({ onBackToDashboard }) {
             <div>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
                 <span style={{ fontSize: '0.75rem', color: 'var(--secondary)', fontWeight: 800 }}>
-                  PROBLEM 0{activeIdx + 1} OF {questions.length}
+                  PROBLEM {String(activeIdx + 1).padStart(2, '0')} OF {questions.length}
                 </span>
                 <div style={{ display: 'flex', gap: '6px' }}>
                   <span className="badge badge-upcoming">
@@ -388,7 +504,7 @@ export default function CodeChallengeRound({ onBackToDashboard }) {
                 className="btn btn-sm btn-secondary"
               >
                 <Send size={14} />
-                <span>{isSubmitting ? 'Evaluating...' : 'Submit Code'}</span>
+                <span>{isSubmitting ? 'Submitting...' : 'Submit Code'}</span>
               </button>
             </div>
           </div>

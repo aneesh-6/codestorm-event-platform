@@ -37,6 +37,10 @@ export default function BugBusterRound({ onBackToDashboard }) {
   const [activeBottomTab, setActiveBottomTab] = useState('tests'); // 'tests' | 'console' | 'history'
   const [mySubmissions, setMySubmissions] = useState([]);
   const [saveStatus, setSaveStatus] = useState('Saved');
+  const [draftCodeMap, setDraftCodeMap] = useState({});
+  const [draftLangMap, setDraftLangMap] = useState({});
+  const [feedback, setFeedback] = useState(null); // { type: 'loading' | 'success' | 'error', message: string }
+  const [attemptedMap, setAttemptedMap] = useState({});
 
   useEffect(() => {
     authFetch('/api/questions/round/1')
@@ -51,22 +55,61 @@ export default function BugBusterRound({ onBackToDashboard }) {
         }
       })
       .catch(err => console.error(err));
+
+    authFetch('/api/submissions/my?roundId=1')
+      .then(r => r.json())
+      .then(subs => {
+        const att = {};
+        subs.forEach(s => { att[s.questionId] = true; });
+        setAttemptedMap(att);
+      })
+      .catch(() => {});
   }, []);
 
   const loadQuestionCode = (q, lang) => {
     const targetLang = lang || q.language || (q.buggyCode?.java ? 'java' : 'python');
+
+    // 1. Check in-memory draft first
+    if (draftCodeMap[q.id] !== undefined) {
+      setEditorCode(draftCodeMap[q.id]);
+      if (draftLangMap[q.id]) setSelectedLang(draftLangMap[q.id]);
+      setSaveStatus('Draft restored');
+      loadSubmissionsForQ(q.id);
+      return;
+    }
+
+    // 2. Check saved progress on server
     authFetch(`/api/progress/1/${q.id}`)
       .then(r => r.json())
       .then(saved => {
         if (saved && saved.codeOrAnswer) {
           setEditorCode(saved.codeOrAnswer);
           if (saved.selectedLanguage) setSelectedLang(saved.selectedLanguage);
+          setDraftCodeMap(prev => ({ ...prev, [q.id]: saved.codeOrAnswer }));
           setSaveStatus('Draft restored');
         } else {
-          const code = q.buggyCode?.[targetLang] || q.buggyCode?.python || q.buggyCode?.java || '// No template';
-          setSelectedLang(targetLang);
-          setEditorCode(code);
-          setSaveStatus('Template loaded');
+          // 3. Fallback to latest submission or initial buggy template
+          authFetch(`/api/submissions/my?roundId=1&questionId=${q.id}`)
+            .then(res => res.json())
+            .then(subs => {
+              if (subs && subs.length > 0 && subs[0].codeOrAnswer) {
+                setEditorCode(subs[0].codeOrAnswer);
+                if (subs[0].language) setSelectedLang(subs[0].language);
+                setDraftCodeMap(prev => ({ ...prev, [q.id]: subs[0].codeOrAnswer }));
+                setSaveStatus('Submitted solution loaded');
+              } else {
+                const code = q.buggyCode?.[targetLang] || q.buggyCode?.python || q.buggyCode?.java || '// No template';
+                setSelectedLang(targetLang);
+                setEditorCode(code);
+                setDraftCodeMap(prev => ({ ...prev, [q.id]: code }));
+                setSaveStatus('Template loaded');
+              }
+            })
+            .catch(() => {
+              const code = q.buggyCode?.[targetLang] || q.buggyCode?.python || q.buggyCode?.java || '// No template';
+              setSelectedLang(targetLang);
+              setEditorCode(code);
+            });
         }
       })
       .catch(() => {
@@ -81,26 +124,51 @@ export default function BugBusterRound({ onBackToDashboard }) {
   const loadSubmissionsForQ = (qId) => {
     authFetch(`/api/submissions/my?roundId=1&questionId=${qId}`)
       .then(r => r.json())
-      .then(subs => setMySubmissions(subs))
+      .then(subs => {
+        setMySubmissions(subs);
+        if (subs.length > 0) {
+          setAttemptedMap(prev => ({ ...prev, [qId]: true }));
+        }
+      })
       .catch(() => {});
   };
 
   const handleSelectQuestion = (idx) => {
+    // Preserve current editor code in draft map
+    const curQ = questions[activeQIndex];
+    if (curQ && editorCode !== undefined) {
+      setDraftCodeMap(prev => ({ ...prev, [curQ.id]: editorCode }));
+      setDraftLangMap(prev => ({ ...prev, [curQ.id]: selectedLang }));
+    }
+
     setActiveQIndex(idx);
-    const q = questions[idx];
-    const targetLang = q.language || (q.buggyCode?.java ? 'java' : 'python');
-    setSelectedLang(targetLang);
-    loadQuestionCode(q, targetLang);
+    setFeedback(null);
     setRunResult(null);
     setSubmissionResult(null);
+
+    const nextQ = questions[idx];
+    if (!nextQ) return;
+
+    if (draftCodeMap[nextQ.id] !== undefined) {
+      setEditorCode(draftCodeMap[nextQ.id]);
+      if (draftLangMap[nextQ.id]) setSelectedLang(draftLangMap[nextQ.id]);
+      setSaveStatus('Draft restored');
+      loadSubmissionsForQ(nextQ.id);
+    } else {
+      const targetLang = nextQ.language || (nextQ.buggyCode?.java ? 'java' : 'python');
+      setSelectedLang(targetLang);
+      loadQuestionCode(nextQ, targetLang);
+    }
   };
 
   const handleLanguageChange = (newLang) => {
     setSelectedLang(newLang);
     const q = questions[activeQIndex];
     if (q) {
+      setDraftLangMap(prev => ({ ...prev, [q.id]: newLang }));
       const code = q.buggyCode?.[newLang] || q.buggyCode?.python || '';
       setEditorCode(code);
+      setDraftCodeMap(prev => ({ ...prev, [q.id]: code }));
     }
   };
 
@@ -109,6 +177,7 @@ export default function BugBusterRound({ onBackToDashboard }) {
     setSaveStatus('Saving...');
     const q = questions[activeQIndex];
     if (q) {
+      setDraftCodeMap(prev => ({ ...prev, [q.id]: newVal }));
       clearTimeout(window._autoSaveTimer);
       window._autoSaveTimer = setTimeout(() => {
         authFetch('/api/progress/save', {
@@ -122,7 +191,7 @@ export default function BugBusterRound({ onBackToDashboard }) {
         })
           .then(() => setSaveStatus('Auto-saved'))
           .catch(() => setSaveStatus('Save error'));
-      }, 1200);
+      }, 1000);
     }
   };
 
@@ -154,9 +223,10 @@ export default function BugBusterRound({ onBackToDashboard }) {
 
   const handleSubmitCode = async () => {
     const q = questions[activeQIndex];
-    if (!q) return;
+    if (!q || isSubmitting || isRunning) return;
 
     setIsSubmitting(true);
+    setFeedback({ type: 'loading', message: 'Submitting...' });
     setActiveBottomTab('tests');
     setSubmissionResult(null);
 
@@ -173,14 +243,26 @@ export default function BugBusterRound({ onBackToDashboard }) {
 
       const data = await res.json();
       if (!res.ok) {
-        alert(data.error || 'Submission failed');
+        setFeedback({ 
+          type: 'error', 
+          message: 'Submission failed. Please try again.' + (data.error ? ` (${data.error})` : '') 
+        });
         return;
       }
 
       setSubmissionResult(data.submission);
+      setFeedback({ type: 'success', message: 'Answer submitted successfully.' });
+      setAttemptedMap(prev => ({ ...prev, [q.id]: true }));
       loadSubmissionsForQ(q.id);
+
+      setTimeout(() => {
+        setFeedback(prev => prev?.type === 'success' ? null : prev);
+      }, 6000);
     } catch (err) {
-      alert('Error submitting code: ' + err.message);
+      setFeedback({ 
+        type: 'error', 
+        message: 'Submission failed. Please try again.' + (err.message ? ` (${err.message})` : '') 
+      });
     } finally {
       setIsSubmitting(false);
     }
@@ -211,32 +293,56 @@ export default function BugBusterRound({ onBackToDashboard }) {
           </div>
         </div>
 
-        {/* Question Selector Tabs */}
-        <div style={{
-          display: 'flex',
-          alignItems: 'center',
-          gap: '6px',
-          overflowX: 'auto',
-          maxWidth: '55vw',
-          padding: '4px 2px'
-        }}>
-          {questions.map((q, idx) => (
-            <button
-              key={q.id}
-              onClick={() => handleSelectQuestion(idx)}
-              className={`btn btn-sm ${activeQIndex === idx ? 'btn-primary' : 'btn-outline'}`}
-              style={{
-                minHeight: '32px',
-                padding: '4px 10px',
-                fontSize: '0.8125rem',
-                whiteSpace: 'nowrap',
-                fontWeight: activeQIndex === idx ? 800 : 600
-              }}
-              title={q.title}
-            >
-              Q{idx + 1}
-            </button>
-          ))}
+        {/* Question Selector Tabs & Navigation */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+          <button
+            onClick={() => handleSelectQuestion(activeQIndex - 1)}
+            disabled={activeQIndex === 0}
+            className="btn btn-sm btn-outline"
+            style={{ padding: '4px 8px', fontSize: '0.8rem' }}
+            title="Previous Question"
+          >
+            ← Prev
+          </button>
+
+          <div style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: '6px',
+            overflowX: 'auto',
+            maxWidth: '45vw',
+            padding: '4px 2px'
+          }}>
+            {questions.map((q, idx) => (
+              <button
+                key={q.id}
+                onClick={() => handleSelectQuestion(idx)}
+                className={`btn btn-sm ${activeQIndex === idx ? 'btn-primary' : (attemptedMap[q.id] ? 'btn-outline' : 'btn-outline')}`}
+                style={{
+                  minHeight: '32px',
+                  padding: '4px 10px',
+                  fontSize: '0.8125rem',
+                  whiteSpace: 'nowrap',
+                  fontWeight: activeQIndex === idx ? 800 : 600,
+                  borderColor: attemptedMap[q.id] ? 'var(--teal)' : undefined,
+                  color: attemptedMap[q.id] && activeQIndex !== idx ? 'var(--teal)' : undefined
+                }}
+                title={q.title}
+              >
+                {attemptedMap[q.id] ? `✓ Q${idx + 1}` : `Q${idx + 1}`}
+              </button>
+            ))}
+          </div>
+
+          <button
+            onClick={() => handleSelectQuestion(activeQIndex + 1)}
+            disabled={activeQIndex >= questions.length - 1}
+            className="btn btn-sm btn-outline"
+            style={{ padding: '4px 8px', fontSize: '0.8rem' }}
+            title="Next Question"
+          >
+            Next →
+          </button>
         </div>
 
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '0.8125rem', color: 'var(--text-muted)' }}>
@@ -244,6 +350,27 @@ export default function BugBusterRound({ onBackToDashboard }) {
           <span>{saveStatus}</span>
         </div>
       </div>
+
+      {/* Visible Feedback Banner for Submissions */}
+      {feedback && (
+        <div style={{
+          padding: '10px 24px',
+          background: feedback.type === 'success' ? '#ecfdf5' : (feedback.type === 'error' ? '#fef2f2' : '#eff6ff'),
+          borderBottom: `1px solid ${feedback.type === 'success' ? '#a7f3d0' : (feedback.type === 'error' ? '#fecaca' : '#bfdbfe')}`,
+          color: feedback.type === 'success' ? '#059669' : (feedback.type === 'error' ? '#dc2626' : '#1d4ed8'),
+          fontSize: '0.875rem',
+          fontWeight: 700,
+          display: 'flex',
+          alignItems: 'center',
+          gap: '8px',
+          zIndex: 10
+        }}>
+          {feedback.type === 'success' && <CheckCircle size={18} />}
+          {feedback.type === 'error' && <XCircle size={18} />}
+          {feedback.type === 'loading' && <Clock size={18} />}
+          <span>{feedback.message}</span>
+        </div>
+      )}
 
       {/* Main Split Layout */}
       <div style={{ display: 'grid', gridTemplateColumns: '42% 58%', flex: 1, overflow: 'hidden' }}>
@@ -371,9 +498,10 @@ export default function BugBusterRound({ onBackToDashboard }) {
                 onClick={handleSubmitCode}
                 disabled={isRunning || isSubmitting}
                 className="btn btn-sm btn-secondary"
+                title="Submit solution for automatic evaluation"
               >
                 <Send size={14} />
-                <span>{isSubmitting ? 'Evaluating...' : 'Submit'}</span>
+                <span>{isSubmitting ? 'Submitting...' : 'Submit'}</span>
               </button>
             </div>
           </div>

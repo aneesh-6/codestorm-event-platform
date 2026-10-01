@@ -579,6 +579,44 @@ app.post('/api/event/round/next', authMiddleware, requireRole('admin'), (req, re
 // -------------------------------------------------------------
 // 3. QUESTIONS API
 // -------------------------------------------------------------
+app.get('/api/questions', authMiddleware, (req, res) => {
+  const roundId = req.query.roundId ? Number(req.query.roundId) : null;
+  if (roundId) {
+    const round = db.getRoundById(roundId);
+    if (!round) return res.status(404).json({ error: 'Round not found' });
+
+    const isPrivileged = req.user.role === 'admin' || req.user.role === 'coordinator';
+    if (!isPrivileged && round.status !== 'live' && round.status !== 'completed') {
+      return res.status(403).json({ error: `Round ${round.name} is currently ${round.status}. Questions are locked.` });
+    }
+
+    const questions = db.getQuestionsByRound(roundId);
+    const settings = db.getEventSettings();
+    const sanitized = questions.map(q => {
+      if (!isPrivileged && !settings.resultsPublished) {
+        const copy = { ...q };
+        delete copy.correctAnswer;
+        delete copy.acceptedAnswers;
+        delete copy.explanation;
+        if (copy.testCases) {
+          copy.testCases = copy.testCases.map(tc => tc.isHidden ? { id: tc.id, isHidden: true } : tc);
+        }
+        return copy;
+      }
+      return q;
+    });
+
+    return res.json(sanitized);
+  }
+
+  // Admin/Coordinator can retrieve all questions
+  if (req.user.role === 'admin' || req.user.role === 'coordinator') {
+    return res.json(db.getQuestions());
+  }
+
+  return res.status(400).json({ error: 'Please specify a roundId parameter.' });
+});
+
 app.get('/api/questions/round/:roundId', authMiddleware, (req, res) => {
   const roundId = Number(req.params.roundId);
   const round = db.getRoundById(roundId);
@@ -654,123 +692,132 @@ app.post('/api/run', authMiddleware, async (req, res) => {
 });
 
 app.post('/api/submit', authMiddleware, async (req, res) => {
-  const { questionId, roundId, codeOrAnswer, language } = req.body;
-  const participantId = req.user.participantId;
+  try {
+    const { questionId, roundId, codeOrAnswer, language } = req.body;
+    const participantId = req.user.participantId;
 
-  if (!participantId) {
-    return res.status(403).json({ error: 'Only participants can submit solutions.' });
-  }
-
-  const round = db.getRoundById(roundId);
-  if (!round) return res.status(404).json({ error: 'Round not found' });
-
-  // STRICT TIMER & LOCK ENFORCEMENT
-  if (round.status !== 'live' || round.isPaused) {
-    return res.status(400).json({ 
-      error: `Submissions are locked. Round ${round.name} is currently ${round.isPaused ? 'paused' : round.status}.` 
-    });
-  }
-
-  if (round.remainingSeconds <= 0) {
-    return res.status(400).json({ error: 'Time has expired for this round! Submissions are locked.' });
-  }
-
-  const question = db.getQuestionById(questionId);
-  if (!question) return res.status(404).json({ error: 'Question not found' });
-
-  let evalResult = null;
-
-  if (question.type === 'mcq' || question.type === 'output') {
-    // Round 2 Trace & Race Output Prediction / MCQ Evaluation
-    let isCorrect = false;
-
-    if (question.type === 'mcq') {
-      isCorrect = String(codeOrAnswer || '').trim().toUpperCase() === String(question.correctAnswer || '').trim().toUpperCase();
-    } else {
-      // Robust multi-line output comparison handling Windows/Unix newlines & trailing spaces
-      const normalize = (s) => String(s || '')
-        .replace(/\r\n/g, '\n')
-        .replace(/\r/g, '\n')
-        .split('\n')
-        .map(l => l.trimEnd())
-        .join('\n')
-        .trim();
-
-      const submittedNorm = normalize(codeOrAnswer);
-      const expectedNorm = normalize(question.correctAnswer);
-      isCorrect = (submittedNorm === expectedNorm);
-
-      if (!isCorrect && Array.isArray(question.acceptedAnswers)) {
-        isCorrect = question.acceptedAnswers.some(ans => normalize(ans) === submittedNorm);
-      }
+    if (!participantId) {
+      return res.status(403).json({ error: 'Only participants can submit solutions.' });
     }
 
-    const points = question.points || 10;
-    // CODESTORM 2026: Strict NO Negative Marking Policy
-    // Correct answer -> award configured positive points
-    // Wrong answer -> 0 marks
-    // Unanswered / Empty -> 0 marks
-    // NEVER subtract marks
-    const score = isCorrect ? points : 0;
+    const round = db.getRoundById(roundId);
+    if (!round) return res.status(404).json({ error: 'Round not found' });
 
-    evalResult = {
-      status: isCorrect ? 'Accepted' : 'Wrong Answer',
-      score: Math.max(0, score),
-      executionTimeMs: 0,
-      memoryKb: 0,
-      passedTests: isCorrect ? 1 : 0,
-      totalTests: 1,
-      testCaseResults: []
-    };
-  } else {
-    // Round 1 BugBuster or Round 3 Code Challenge
-    const lang = language || 'python';
-    evalResult = await evaluateSubmission(lang, codeOrAnswer, question.testCases, question.points, question.timeLimitMs || 2000);
+    // STRICT TIMER & LOCK ENFORCEMENT
+    if (round.status !== 'live' || round.isPaused) {
+      return res.status(400).json({ 
+        error: `Submissions are locked. Round ${round.name} is currently ${round.isPaused ? 'paused' : round.status}.` 
+      });
+    }
+
+    const dynamicRemaining = round.endTime 
+      ? Math.max(0, Math.floor((new Date(round.endTime).getTime() - Date.now()) / 1000))
+      : (round.remainingSeconds ?? 0);
+
+    if (dynamicRemaining <= 0) {
+      return res.status(400).json({ error: 'Time has expired for this round! Submissions are locked.' });
+    }
+
+    const question = db.getQuestionById(questionId);
+    if (!question) return res.status(404).json({ error: 'Question not found' });
+
+    let evalResult = null;
+
+    if (question.type === 'mcq' || question.type === 'output') {
+      // Round 2 Trace & Race Output Prediction / MCQ Evaluation
+      let isCorrect = false;
+
+      if (question.type === 'mcq') {
+        isCorrect = String(codeOrAnswer || '').trim().toUpperCase() === String(question.correctAnswer || '').trim().toUpperCase();
+      } else {
+        // Robust multi-line output comparison handling Windows/Unix newlines & trailing spaces
+        const normalize = (s) => String(s || '')
+          .replace(/\r\n/g, '\n')
+          .replace(/\r/g, '\n')
+          .split('\n')
+          .map(l => l.trimEnd())
+          .join('\n')
+          .trim();
+
+        const submittedNorm = normalize(codeOrAnswer);
+        const expectedNorm = normalize(question.correctAnswer);
+        isCorrect = (submittedNorm === expectedNorm);
+
+        if (!isCorrect && Array.isArray(question.acceptedAnswers)) {
+          isCorrect = question.acceptedAnswers.some(ans => normalize(ans) === submittedNorm);
+        }
+      }
+
+      const points = question.points || 10;
+      // CODESTORM 2026: Strict NO Negative Marking Policy
+      // Correct answer -> award configured positive points
+      // Wrong answer -> 0 marks
+      // Unanswered / Empty -> 0 marks
+      // NEVER subtract marks
+      const score = isCorrect ? points : 0;
+
+      evalResult = {
+        status: isCorrect ? 'Accepted' : 'Wrong Answer',
+        score: Math.max(0, score),
+        executionTimeMs: 0,
+        memoryKb: 0,
+        passedTests: isCorrect ? 1 : 0,
+        totalTests: 1,
+        testCaseResults: []
+      };
+    } else {
+      // Round 1 BugBuster or Round 3 Code Challenge
+      const lang = language || 'python';
+      evalResult = await evaluateSubmission(lang, codeOrAnswer, question.testCases, question.points, question.timeLimitMs || 2000);
+    }
+
+    // Create submission record
+    const submission = db.createSubmission({
+      participantId,
+      participantName: req.user.name,
+      questionId,
+      questionTitle: question.title,
+      roundId: Number(roundId),
+      codeOrAnswer,
+      language: language || 'text',
+      status: evalResult.status,
+      score: evalResult.score,
+      executionTimeMs: evalResult.executionTimeMs,
+      memoryKb: evalResult.memoryKb,
+      passedTests: evalResult.passedTests,
+      totalTests: evalResult.totalTests,
+      testCaseResults: evalResult.testCaseResults
+    });
+
+    // Real-time broadcast
+    io.emit('new_submission', {
+      id: submission.id,
+      participantId,
+      participantName: req.user.name,
+      questionTitle: question.title,
+      roundId,
+      status: submission.status,
+      score: submission.score,
+      submittedAt: submission.submittedAt
+    });
+
+    // Broadcast updated leaderboard (respects Leaderboard Privacy: HIDDEN by default)
+    const currentSettings = db.getEventSettings();
+    if (currentSettings.leaderboardVisible) {
+      const participants = db.getParticipants();
+      io.emit('leaderboard_update', participants);
+    } else {
+      io.emit('leaderboard_update', []);
+    }
+
+    res.json({
+      success: true,
+      submission
+    });
+  } catch (err) {
+    console.error('[SUBMIT ERROR]', err);
+    res.status(500).json({ error: 'Submission failed: ' + (err.message || 'Evaluation error') });
   }
-
-  // Create submission record
-  const submission = db.createSubmission({
-    participantId,
-    participantName: req.user.name,
-    questionId,
-    questionTitle: question.title,
-    roundId: Number(roundId),
-    codeOrAnswer,
-    language: language || 'text',
-    status: evalResult.status,
-    score: evalResult.score,
-    executionTimeMs: evalResult.executionTimeMs,
-    memoryKb: evalResult.memoryKb,
-    passedTests: evalResult.passedTests,
-    totalTests: evalResult.totalTests,
-    testCaseResults: evalResult.testCaseResults
-  });
-
-  // Real-time broadcast
-  io.emit('new_submission', {
-    id: submission.id,
-    participantId,
-    participantName: req.user.name,
-    questionTitle: question.title,
-    roundId,
-    status: submission.status,
-    score: submission.score,
-    submittedAt: submission.submittedAt
-  });
-
-  // Broadcast updated leaderboard (respects Leaderboard Privacy: HIDDEN by default)
-  const currentSettings = db.getEventSettings();
-  if (currentSettings.leaderboardVisible) {
-    const participants = db.getParticipants();
-    io.emit('leaderboard_update', participants);
-  } else {
-    io.emit('leaderboard_update', []);
-  }
-
-  res.json({
-    success: true,
-    submission
-  });
 });
 
 app.get('/api/submissions/my', authMiddleware, (req, res) => {

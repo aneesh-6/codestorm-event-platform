@@ -115,6 +115,24 @@ export function SocketProvider({ children }) {
     };
   }, [user]);
 
+  // Client-side smooth timer tick (ensures timer continues updating smoothly even if network packets drop)
+  useEffect(() => {
+    const tickInterval = setInterval(() => {
+      setTimerState(prev => {
+        if (prev.status === 'live' && !prev.isPaused && prev.remainingSeconds > 0) {
+          const nextSec = prev.remainingSeconds - 1;
+          if (nextSec === 0) {
+            return { ...prev, remainingSeconds: 0, status: 'completed' };
+          }
+          return { ...prev, remainingSeconds: nextSec };
+        }
+        return prev;
+      });
+    }, 1000);
+
+    return () => clearInterval(tickInterval);
+  }, []);
+
   // -------------------------------------------------------------
   // ANTI-CHEAT MONITORING FOR PARTICIPANTS
   // -------------------------------------------------------------

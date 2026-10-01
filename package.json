@@ -7,7 +7,7 @@
     "start": "node server/server.js",
     "dev:server": "node server/server.js",
     "build:client": "cd client && npm run build",
-    "build": "cd client && npm run build"
+    "build": "node scripts/setup-jdk.js && cd client && npm run build"
   },
   "keywords": ["codestorm", "competitive-programming", "hackathon-platform"],
   "author": "CodeStorm 2026 Organizing Committee - MREM CSE-DS"

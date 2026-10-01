@@ -99,6 +99,8 @@ function runLocalCode(language, code, input = '', timeLimitMs = 2000, startTime 
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codestorm-'));
     let isResolved = false;
 
+    let activeProc = null;
+
     const cleanup = () => {
       try { fs.rmSync(tempDir, { recursive: true, force: true }); } catch (e) {}
     };
@@ -106,6 +108,9 @@ function runLocalCode(language, code, input = '', timeLimitMs = 2000, startTime 
     const safeResolve = (res) => {
       if (!isResolved) {
         isResolved = true;
+        if (activeProc) {
+          try { activeProc.kill('SIGKILL'); } catch (e) {}
+        }
         cleanup();
         resolve(res);
       }
@@ -132,6 +137,7 @@ function runLocalCode(language, code, input = '', timeLimitMs = 2000, startTime 
       // Use python3 on Unix/Linux, python on Windows (with fallback)
       const pyBin = process.platform === 'win32' ? 'python' : 'python3';
       const proc = spawn(pyBin, [filePath], { timeout: timeLimitMs });
+      activeProc = proc;
       let stdout = '';
       let stderr = '';
 
@@ -140,6 +146,7 @@ function runLocalCode(language, code, input = '', timeLimitMs = 2000, startTime 
         // If python3 failed on Unix, attempt python
         if (err.code === 'ENOENT' && pyBin === 'python3') {
           const fallbackProc = spawn('python', [filePath], { timeout: timeLimitMs });
+          activeProc = fallbackProc;
           let fbOut = '';
           let fbErr = '';
           fallbackProc.on('error', (fbErr2) => {
@@ -151,10 +158,11 @@ function runLocalCode(language, code, input = '', timeLimitMs = 2000, startTime 
               memoryKb: 0
             });
           });
+          fallbackProc.stdin.on('error', () => {});
           if (input) {
             fallbackProc.stdin.write(input);
-            fallbackProc.stdin.end();
           }
+          fallbackProc.stdin.end();
           fallbackProc.stdout.on('data', d => { fbOut += d.toString(); });
           fallbackProc.stderr.on('data', d => { fbErr += d.toString(); });
           fallbackProc.on('close', codeExit => {
@@ -179,10 +187,11 @@ function runLocalCode(language, code, input = '', timeLimitMs = 2000, startTime 
         });
       });
 
+      proc.stdin.on('error', () => {});
       if (input) {
         proc.stdin.write(input);
-        proc.stdin.end();
       }
+      proc.stdin.end();
 
       proc.stdout.on('data', d => { stdout += d.toString(); });
       proc.stderr.on('data', d => { stderr += d.toString(); });
@@ -237,6 +246,7 @@ function runLocalCode(language, code, input = '', timeLimitMs = 2000, startTime 
         }
 
         const runProc = spawn(binFile, [], { timeout: timeLimitMs });
+        activeProc = runProc;
         let stdout = '';
         let stderr = '';
 
@@ -251,10 +261,11 @@ function runLocalCode(language, code, input = '', timeLimitMs = 2000, startTime 
           });
         });
 
+        runProc.stdin.on('error', () => {});
         if (input) {
           runProc.stdin.write(input);
-          runProc.stdin.end();
         }
+        runProc.stdin.end();
 
         runProc.stdout.on('data', d => { stdout += d.toString(); });
         runProc.stderr.on('data', d => { stderr += d.toString(); });
@@ -281,6 +292,7 @@ function runLocalCode(language, code, input = '', timeLimitMs = 2000, startTime 
       fs.writeFileSync(srcFile, code, 'utf8');
 
       const compProc = spawn('g++', ['-O2', '-std=c++17', srcFile, '-o', binFile]);
+      activeProc = compProc;
       let compErr = '';
 
       compProc.on('error', (err) => {
@@ -310,6 +322,7 @@ function runLocalCode(language, code, input = '', timeLimitMs = 2000, startTime 
         }
 
         const runProc = spawn(binFile, [], { timeout: timeLimitMs });
+        activeProc = runProc;
         let stdout = '';
         let stderr = '';
 
@@ -324,10 +337,11 @@ function runLocalCode(language, code, input = '', timeLimitMs = 2000, startTime 
           });
         });
 
+        runProc.stdin.on('error', () => {});
         if (input) {
           runProc.stdin.write(input);
-          runProc.stdin.end();
         }
+        runProc.stdin.end();
 
         runProc.stdout.on('data', d => { stdout += d.toString(); });
         runProc.stderr.on('data', d => { stderr += d.toString(); });
@@ -358,6 +372,7 @@ function runLocalCode(language, code, input = '', timeLimitMs = 2000, startTime 
       let compileProc;
       try {
         compileProc = spawn(javacCmd, [javaFile]);
+        activeProc = compileProc;
       } catch (e) {
         clearTimeout(timer);
         // Fall back to pattern evaluation
@@ -391,6 +406,7 @@ function runLocalCode(language, code, input = '', timeLimitMs = 2000, startTime 
         let runProc;
         try {
           runProc = spawn(javaCmd, ['-cp', tempDir, className], { timeout: timeLimitMs });
+          activeProc = runProc;
         } catch (e) {
           clearTimeout(timer);
           safeResolve(evaluateJavaDebuggingPattern(code, [], 100));
@@ -405,10 +421,11 @@ function runLocalCode(language, code, input = '', timeLimitMs = 2000, startTime 
           safeResolve(evaluateJavaDebuggingPattern(code, [], 100));
         });
 
+        runProc.stdin.on('error', () => {});
         if (input) {
           runProc.stdin.write(input);
-          runProc.stdin.end();
         }
+        runProc.stdin.end();
 
         runProc.stdout.on('data', d => { stdout += d.toString(); });
         runProc.stderr.on('data', d => { stderr += d.toString(); });
